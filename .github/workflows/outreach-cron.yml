@@ -1,0 +1,42 @@
+name: Outreach Email Cron
+
+# Mirrors FootWord's old GitHub-Actions-cron pattern (scheduled workflow hits a
+# CRON_SECRET-protected endpoint) — adapted for StanWeb's multi-niche daily
+# outreach. Runs alongside the app's own internal node-cron scheduler on
+# Railway; both call the same POST /outreach/email/run endpoint, which is
+# self-throttling (EMAIL_DAILY_CAP + EMAIL_MIN_GAP_MINUTES), so an overlapping
+# trigger just no-ops instead of double-sending. This gives a second,
+# independent trigger path (visible run history in the Actions tab) that
+# keeps working even if Railway's process restarts or its internal cron
+# doesn't fire for some reason.
+
+on:
+  schedule:
+    # Every 30 min, ~9am-5:30pm US Eastern, Mon-Fri (13:00-21:30 UTC covers
+    # both EDT and EST offsets). Actual business-hour + daily-cap enforcement
+    # happens server-side either way — this window just avoids firing at 3am.
+    - cron: '*/30 13-21 * * 1-5'
+  workflow_dispatch: {} # manual trigger from the Actions tab, for testing
+
+jobs:
+  run-outreach-email:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger email sequence run
+        env:
+          SERVER_URL: ${{ secrets.OUTREACH_SERVER_URL }}
+          CRON_SECRET: ${{ secrets.OUTREACH_CRON_SECRET }}
+        run: |
+          if [ -z "$SERVER_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "::error::Missing OUTREACH_SERVER_URL or OUTREACH_CRON_SECRET repo secret"
+            exit 1
+          fi
+          http_code=$(curl -s -o response.json -w "%{http_code}" -X POST \
+            "${SERVER_URL%/}/outreach/email/run" \
+            -H "Authorization: Bearer ${CRON_SECRET}")
+          echo "HTTP $http_code"
+          cat response.json
+          if [ "$http_code" -ge 400 ]; then
+            echo "::error::Outreach run endpoint returned $http_code"
+            exit 1
+          fi

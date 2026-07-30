@@ -118,10 +118,53 @@ function extractSearchResultUrls(html) {
 }
 
 /**
+ * Real search via Serper.dev (Google results as JSON, no scraping/CAPTCHA
+ * involved) — used when SERPER_API_KEY is configured. Returns an array of
+ * result URLs, or null if not configured / the request failed.
+ */
+async function searchViaSerper(query) {
+  const apiKey = process.env.SERPER_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    const { data } = await client.post(
+      'https://google.serper.dev/search',
+      { q: query },
+      { headers: { 'X-API-KEY': apiKey, 'Content-Type': 'application/json' } }
+    );
+    const organic = data?.organic || [];
+    return organic.map((r) => r.link).filter(Boolean);
+  } catch (err) {
+    logger.warn('websiteEmailScraper: Serper search failed', { query, message: err.message });
+    return null;
+  }
+}
+
+/**
+ * DuckDuckGo's public HTML search — no API key needed, but DDG serves an
+ * anti-bot CAPTCHA challenge to most automated requests, so this frequently
+ * finds nothing. Kept only as a last-resort fallback when Serper isn't
+ * configured; never trusted if it comes back as the challenge page itself.
+ */
+async function searchViaDuckDuckGo(query) {
+  const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+  const html = await fetchPage(searchUrl);
+  if (!html) return null;
+
+  if (html.includes('anomaly-modal') || html.includes('challenge-form')) {
+    logger.warn('websiteEmailScraper: DuckDuckGo served a bot-check page, skipping', { query });
+    return null;
+  }
+
+  return extractSearchResultUrls(html);
+}
+
+/**
  * Last resort when a lead has no known website or social_url at all: search
  * the open web for "<business name> <city>" and scrape the top few results
- * for a contact email. No search API key required (DuckDuckGo's public HTML
- * endpoint), no Google Places involved.
+ * for a contact email. Prefers Serper (reliable, real search API) when
+ * SERPER_API_KEY is set; falls back to scraping DuckDuckGo's HTML (frequently
+ * blocked, best-effort only) when it isn't.
  *
  * @param {string} name
  * @param {string} city
@@ -131,21 +174,10 @@ async function searchWebForEmail(name, city) {
   if (!name) return null;
 
   const query = `${name} ${city || ''}`.trim();
-  const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-  const html = await fetchPage(searchUrl);
-  if (!html) return null;
+  const urls = (await searchViaSerper(query)) ?? (await searchViaDuckDuckGo(query));
+  if (!urls) return null;
 
-  // DDG serves an anti-bot CAPTCHA page for automated requests instead of
-  // real results — detect it and bail rather than trust anything scraped
-  // from that page (it isn't search results, and this isn't a challenge
-  // we're going to try to solve).
-  if (html.includes('anomaly-modal') || html.includes('challenge-form')) {
-    logger.warn('websiteEmailScraper: DuckDuckGo served a bot-check page, skipping', { name, city });
-    return null;
-  }
-
-  const candidates = extractSearchResultUrls(html).slice(0, MAX_RESULTS_TO_TRY);
-  for (const url of candidates) {
+  for (const url of urls.slice(0, MAX_RESULTS_TO_TRY)) {
     const email = await scrapeEmailFromUrl(url);
     if (email) {
       logger.debug('websiteEmailScraper: found via web search', { name, city, url, email });

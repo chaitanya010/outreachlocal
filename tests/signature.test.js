@@ -10,24 +10,27 @@ describe('signature.buildSignature', () => {
     process.env = ORIGINAL_ENV;
   });
 
-  test('default (no contact) still includes the bare domain and the Calendly link', () => {
+  test('default is zero-link: bare domain only, no Calendly/contact', () => {
     process.env.CALENDLY_URL = 'https://calendly.com/x/30min';
     process.env.WHATSAPP_SIGNATURE_NUMBER = '+91 8007519898';
     delete process.env.SIGNATURE_INCLUDE_CONTACT;
+    delete process.env.SIGNATURE_INCLUDE_CALENDLY;
     const { buildSignature } = require('../src/utils/signature');
 
     const sig = buildSignature();
     expect(sig).toContain('stanweb.tech');
-    expect(sig).toContain('Schedule a meeting with me: https://calendly.com/x/30min');
+    expect(sig).not.toContain('Schedule a meeting');
+    expect(sig).not.toContain('calendly.com');
     expect(sig).not.toContain('WhatsApp');
     expect(sig).not.toContain('@');
   });
 
-  test('omits the Calendly line entirely when CALENDLY_URL is unset', () => {
-    delete process.env.CALENDLY_URL;
+  test('SIGNATURE_INCLUDE_CALENDLY=true adds the Calendly line', () => {
+    process.env.SIGNATURE_INCLUDE_CALENDLY = 'true';
+    process.env.CALENDLY_URL = 'https://calendly.com/x/30min';
     const { buildSignature } = require('../src/utils/signature');
 
-    expect(buildSignature()).not.toContain('Schedule a meeting');
+    expect(buildSignature()).toContain('Schedule a meeting with me: https://calendly.com/x/30min');
   });
 
   test('SIGNATURE_INCLUDE_CONTACT=true adds contact lines without reintroducing website/LinkedIn links', () => {

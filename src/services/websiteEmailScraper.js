@@ -35,9 +35,12 @@ const VALID_TLDS = new Set([
 const IGNORE_PATTERNS = [
   // Platform/template system addresses
   /^(info|support)@(wixpress|godaddy|squarespace|weebly|shopify)\.com$/i,
-  /@(schema\.org|w3\.org|googleapis\.com|gstatic\.com|example\.com|domain\.com|mystore\.com)$/i,
+  /@(schema\.org|w3\.org|googleapis\.com|gstatic\.com|example\.com|domain\.com|mystore\.com|mysite\.com)$/i,
   // Placeholder/template dummy values ("you@email.com", "your@domain.com", etc.)
   /^(you|your|name|user|test|username)@(email|domain|mail|yourdomain)\.com$/i,
+  // Med-spa/local-business website & SEO platform vendors -- their agency
+  // login/admin address embedded in the page, not the business's own contact
+  /@(growth99|patientnow|weomedia)\.com$/i,
   // Sentry error-tracking DSNs embedded in page JS — <hash>@sentry.io or
   // <hash>@<project-id>.ingest.<region>.sentry.io — not an email
   /@([a-z0-9-]+\.)*sentry\.io$/i,

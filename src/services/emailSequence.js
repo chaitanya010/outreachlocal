@@ -39,7 +39,7 @@ async function sendStage(lead, stage) {
   const attachments = stage === 1 ? [getDeckAttachment()].filter(Boolean) : undefined;
   const result = await sendEmail({
     to: lead.email,
-    replyTo: process.env.RESEND_FROM_EMAIL,
+    replyTo: process.env.SES_FROM_EMAIL,
     ...content,
     attachments,
   });

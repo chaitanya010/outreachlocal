@@ -1,7 +1,10 @@
 const { Router } = require('express');
 const { runPipeline, DEFAULT_TYPES } = require('../jobs/leadPipeline');
-const { getLeads } = require('../db/leadsRepository');
+const { getLeads, getLeadsMissingWebPresence, updateWebPresence } = require('../db/leadsRepository');
 const { getColdCallContext } = require('../services/prospectScorer');
+const { getPlaceDetails } = require('../services/googlePlacesService');
+const { isInvalidWebsite } = require('../filters/websiteFilter');
+const sleep = require('../utils/sleep');
 const logger = require('../utils/logger');
 
 const router = Router();
@@ -27,6 +30,63 @@ router.post('/generate-leads', async (req, res) => {
     return res.status(200).json({ success: true, ...summary });
   } catch (err) {
     logger.error('Pipeline error', { message: err.message });
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── POST /leads/backfill-web-presence ────────────────────────────────────────
+
+/**
+ * Targeted, bounded fix for leads with NEITHER an email nor a social_url —
+ * i.e. leads scraped before social_url existed, so the enrichment scraper
+ * has nothing to work with. Re-fetches Place Details for just this small
+ * set (not a full city re-scan) to recover a website or social profile URL.
+ * Real websites (has_website flips true) drop out of the outreach pool by
+ * design — that's correct, they're no longer a no-website prospect.
+ *
+ * Body: { limit? }  default 50, capped at 200
+ */
+router.post('/leads/backfill-web-presence', async (req, res) => {
+  const limit = Math.min(parseInt(req.body?.limit, 10) || 50, 200);
+
+  try {
+    const leads = await getLeadsMissingWebPresence(limit);
+    let recoveredWebsite = 0;
+    let recoveredSocial = 0;
+    let stillNothing = 0;
+
+    for (const lead of leads) {
+      let details = null;
+      try {
+        details = await getPlaceDetails(lead.place_id);
+      } catch (err) {
+        logger.warn('Backfill: place details fetch failed', { place_id: lead.place_id, message: err.message });
+      }
+      await sleep(150); // same pacing as the discovery pipeline
+
+      if (!details || !details.website) {
+        stillNothing++;
+        continue;
+      }
+
+      if (isInvalidWebsite(details.website)) {
+        await updateWebPresence(lead.place_id, { social_url: details.website });
+        recoveredSocial++;
+      } else {
+        await updateWebPresence(lead.place_id, { website: details.website, has_website: true });
+        recoveredWebsite++;
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      checked: leads.length,
+      recoveredWebsite,
+      recoveredSocial,
+      stillNothing,
+    });
+  } catch (err) {
+    logger.error('Backfill web presence error', { message: err.message });
     return res.status(500).json({ error: err.message });
   }
 });

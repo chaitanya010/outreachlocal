@@ -25,6 +25,7 @@ const IGNORE_PATTERNS = [
   /^(info|support)@(wixpress|godaddy|squarespace|weebly|shopify)\.com$/i,
   /@(sentry\.io|schema\.org|w3\.org|googleapis\.com|gstatic\.com|example\.com|domain\.com)$/i,
   /^(noreply|no-reply|donotreply)@/i,
+  /@(duckduckgo|google|bing|yahoo|facebook|instagram)\.com$/i,
 ];
 
 function extractEmails(html) {
@@ -85,4 +86,74 @@ async function scrapeEmailFromUrl(url) {
   return null;
 }
 
-module.exports = { scrapeEmailFromUrl, extractEmails };
+// ─── Web search fallback (no website/social_url on file at all) ──────────────
+
+const SEARCH_RESULT_RE = /class="result__a"[^>]*href="([^"]+)"/g;
+const MAX_RESULTS_TO_TRY = 3;
+
+/**
+ * Pull real target URLs out of a DuckDuckGo HTML search results page.
+ * DDG's no-JS HTML endpoint wraps each result in a redirect
+ * (//duckduckgo.com/l/?uddg=<encoded-real-url>&...) — unwrap that to get the
+ * actual site.
+ */
+function extractSearchResultUrls(html) {
+  const urls = [];
+  let match;
+  while ((match = SEARCH_RESULT_RE.exec(html))) {
+    let href = match[1];
+    try {
+      if (href.includes('uddg=')) {
+        const wrapper = new URL(href, 'https://duckduckgo.com');
+        const real = wrapper.searchParams.get('uddg');
+        if (real) href = real;
+      }
+      const parsed = new URL(href);
+      if (!/(^|\.)duckduckgo\.com$/i.test(parsed.hostname)) urls.push(href);
+    } catch {
+      // malformed href, skip
+    }
+  }
+  return [...new Set(urls)];
+}
+
+/**
+ * Last resort when a lead has no known website or social_url at all: search
+ * the open web for "<business name> <city>" and scrape the top few results
+ * for a contact email. No search API key required (DuckDuckGo's public HTML
+ * endpoint), no Google Places involved.
+ *
+ * @param {string} name
+ * @param {string} city
+ * @returns {Promise<string|null>}
+ */
+async function searchWebForEmail(name, city) {
+  if (!name) return null;
+
+  const query = `${name} ${city || ''}`.trim();
+  const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+  const html = await fetchPage(searchUrl);
+  if (!html) return null;
+
+  // DDG serves an anti-bot CAPTCHA page for automated requests instead of
+  // real results — detect it and bail rather than trust anything scraped
+  // from that page (it isn't search results, and this isn't a challenge
+  // we're going to try to solve).
+  if (html.includes('anomaly-modal') || html.includes('challenge-form')) {
+    logger.warn('websiteEmailScraper: DuckDuckGo served a bot-check page, skipping', { name, city });
+    return null;
+  }
+
+  const candidates = extractSearchResultUrls(html).slice(0, MAX_RESULTS_TO_TRY);
+  for (const url of candidates) {
+    const email = await scrapeEmailFromUrl(url);
+    if (email) {
+      logger.debug('websiteEmailScraper: found via web search', { name, city, url, email });
+      return email;
+    }
+  }
+
+  return null;
+}
+
+module.exports = { scrapeEmailFromUrl, searchWebForEmail, extractEmails };

@@ -14,7 +14,8 @@
 const axios = require('axios');
 const axiosRetry = require('axios-retry').default;
 const { config } = require('../config');
-const { scrapeEmailFromUrl } = require('./websiteEmailScraper');
+const { scrapeEmailFromUrl, searchWebForEmail } = require('./websiteEmailScraper');
+const sleep = require('../utils/sleep');
 const logger = require('../utils/logger');
 
 // ─── Shared axios instance ────────────────────────────────────────────────────
@@ -110,8 +111,11 @@ async function enrichWithApollo(name, city) {
 // ─── Main enrichment function ─────────────────────────────────────────────────
 
 /**
- * Enrich a single lead. Tries a free website/social-profile scrape first
- * (no API key needed), then falls back to Hunter, then Apollo.
+ * Enrich a single lead. Tries, in order (each free before falling further):
+ *   1. Scrape the lead's known website/social_url, if any
+ *   2. No known URL at all -> search the open web for the business and
+ *      scrape the top results (no Google Places call, no search API key)
+ *   3. Hunter, then Apollo (only if those API keys are configured)
  * Returns enrichment data or null if nothing found.
  *
  * @param {{ name: string, city: string, website?: string, social_url?: string }} lead
@@ -123,6 +127,12 @@ async function enrichLead(lead) {
     const email = await scrapeEmailFromUrl(scrapeUrl);
     if (email) {
       logger.debug('Scrape enrichment hit', { name: lead.name, email });
+      return { email, domain: null };
+    }
+  } else {
+    const email = await searchWebForEmail(lead.name, lead.city);
+    if (email) {
+      logger.debug('Web-search enrichment hit', { name: lead.name, email });
       return { email, domain: null };
     }
   }
@@ -159,6 +169,10 @@ async function enrichBatch(leads, updateFn) {
     } else {
       skipped++;
     }
+
+    // Be polite to DuckDuckGo / target sites between leads — this runs once/day
+    // in the background, there's no rush.
+    await sleep(500);
   }
 
   logger.info('Batch enrichment complete', { enriched, skipped });

@@ -181,6 +181,44 @@ async function getLeadsMissingEmail(limit = 50) {
   return data || [];
 }
 
+/**
+ * No-website leads with neither an email nor a social_url on file — i.e.
+ * nothing at all for the scraper to work with. Candidates for a targeted
+ * Place Details re-fetch (see POST /leads/backfill-web-presence) to recover
+ * whatever web presence they have.
+ */
+async function getLeadsMissingWebPresence(limit = 50) {
+  const db = getClient();
+  const { data, error } = await db
+    .from(TABLE)
+    .select('*')
+    .eq('has_website', false)
+    .is('email', null)
+    .is('social_url', null)
+    .order('prospect_score', { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    logger.error('getLeadsMissingWebPresence failed', { message: error.message });
+    throw error;
+  }
+  return data || [];
+}
+
+/**
+ * Update website/has_website/social_url fields directly (no enriched_at
+ * stamp — this isn't an enrichment attempt, it's recovering data that should
+ * have been captured on first discovery).
+ */
+async function updateWebPresence(placeId, fields) {
+  const db = getClient();
+  const { error } = await db.from(TABLE).update(fields).eq('place_id', placeId);
+  if (error) {
+    logger.error('updateWebPresence failed', { placeId, message: error.message });
+    throw error;
+  }
+}
+
 // ─── Email Sequence ───────────────────────────────────────────────────────────
 
 /**
@@ -378,6 +416,8 @@ module.exports = {
   logOutreach,
   getOutreachLogs,
   getLeadsMissingEmail,
+  getLeadsMissingWebPresence,
+  updateWebPresence,
   getEmailSequenceCandidates,
   recordEmailStageSent,
   setEmailFlag,

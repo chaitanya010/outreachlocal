@@ -15,14 +15,17 @@
  *    link, no other contact links), STILL landed in Promotions.
  *  - A completely bare email (zero links, zero HTML, no product pitch,
  *    name-only sign-off) landed in the Inbox.
- * Conclusion: for this domain's current (brand-new, unwarmed) sending
- * reputation, ANY link at all triggers Promotions, not just link count.
- * Signature is zero-link by default until that changes. Calendly/WhatsApp/
- * phone/email stay available via env flags for whenever it's worth
- * re-testing (e.g. after real reply/engagement history builds up).
+ * Follow-up round narrowed it further: even that bare-plain-text version
+ * landed in Promotions once the body mentioned the company name or listed
+ * services. The one email that reliably lands in the Inbox has NO company
+ * name/title/brand anywhere and signs off with just a first name -- so
+ * that's the default now. Full name/title/brand/Calendly/contact all stay
+ * available via env flags for whenever it's worth re-testing (e.g. once
+ * this address has some real reply/engagement history built up).
  */
 
-const NAME = process.env.SENDER_NAME || 'Chaitanya Kapre';
+const FULL_NAME = process.env.SENDER_NAME || 'Chaitanya Kapre';
+const FIRST_NAME = FULL_NAME.split(/\s+/)[0];
 const TITLE = process.env.SENDER_TITLE || 'Founder | StanWeb';
 // Bare domain mention, not a hyperlink.
 const BRAND_LINE = 'stanweb.tech';
@@ -34,6 +37,7 @@ const PHONE_NUMBER = process.env.SENDER_PHONE || '';
 // Everything below is opt-in via env flags -- confirmed to trigger
 // Promotions placement, so off by default. Contact details are reachable
 // via Reply-To regardless of what's shown here.
+const INCLUDE_BRAND = process.env.SIGNATURE_INCLUDE_BRAND === 'true';
 const INCLUDE_CONTACT = process.env.SIGNATURE_INCLUDE_CONTACT === 'true';
 const INCLUDE_CALENDLY = process.env.SIGNATURE_INCLUDE_CALENDLY === 'true';
 
@@ -47,7 +51,9 @@ function whatsappDisplayNumber(raw) {
 }
 
 function buildSignature() {
-  const lines = [NAME, TITLE, BRAND_LINE];
+  if (!INCLUDE_BRAND) return FIRST_NAME;
+
+  const lines = [FULL_NAME, TITLE, BRAND_LINE];
   if (INCLUDE_CALENDLY && CALENDLY_URL) lines.push('', `Schedule a meeting with me: ${CALENDLY_URL}`);
 
   if (INCLUDE_CONTACT) {

@@ -105,28 +105,30 @@ Just the message text, nothing else.`;
 // channels have their own established formats -- this one encodes the
 // deliverability-first philosophy: never sound like an agency, never invent
 // facts, never use HTML/emojis/hype, one CTA, one genuine observation.
-const EMAIL_SYSTEM_PROMPT = `You write cold outreach emails for StanWeb.tech, a service that helps local
-businesses (salons, spas, clinics, med spas, and similar) reduce no-shows and drop-offs
-and bring in more recurring/repeat business, using AI voice calling, website revamps,
-SEO, AEO (answer engine optimization), GEO (generative engine optimization), appointment
-automation, CRM setup, and AI chatbots.
+// Live testing (real sends, checking inbox vs Promotions) narrowed this down
+// hard: it was never really about HTML vs plain text, links, or attachments.
+// The email that consistently lands in the Inbox has NO company self-intro
+// ("At StanWeb, we..."), NO service list, and signs off with just a first
+// name -- it reads as one person reaching out to another, not a pitch.
+// Every version that named the company or listed services landed in
+// Promotions, even in bare plain text with zero links. So: no company name,
+// no service list, no "we help businesses like yours" framing, in the body.
+const EMAIL_SYSTEM_PROMPT = `You write short, personal cold outreach emails on behalf of Chaitanya, who
+helps local businesses (salons, spas, clinics, med spas, and similar) reduce no-shows and
+bring in more repeat business.
 
 Rules -- follow all of these exactly:
-- Write like a real person emailing another business owner, not a marketer or an agency.
-- 90-120 words total. 2-4 short paragraphs. Plain text only, no HTML, no emojis, no bold,
-  no bullet lists, no exaggeration, no hype words ("game-changer", "revolutionize",
-  "skyrocket", "cutting-edge", "leverage").
+- Write like a real 1:1 email from one person to another business owner. NOT a company
+  pitch: do not name the company, do not list services or tools, do not say "we help
+  businesses like yours" or anything that reads as a sales introduction.
+- 40-70 words total. 2-4 short sentences/paragraphs. Plain text only, no HTML, no emojis,
+  no bold, no bullet lists, no exaggeration, no hype words.
 - Include exactly ONE genuine personalized observation, using ONLY the specific fact(s)
   given to you below. Never invent a detail that wasn't given to you.
-- Frame the pitch around the outcome (fewer no-shows/drop-offs, more repeat/recurring
-  clients), not a feature list -- but naturally work in 2-3 of the specific service
-  names (AI voice calling, website revamp, SEO, AEO, GEO) rather than vague terms like
-  "AI automation" alone, so the recipient knows concretely what's being offered.
-- Include exactly ONE call to action, and it must be a reply, not a link or booking
-  request (e.g. "Worth a quick reply if this sounds useful?" or "Want me to share how
-  this could work for you? Just reply and I will.").
-- Do not include a signature, sign-off, or unsubscribe line -- those are added separately.
-- Do not include any links in the body text.`;
+- Include exactly ONE call to action asking for a short conversation (e.g. "Would you
+  have 15 minutes this week to talk?"), not a reply-for-more-info CTA and not a link.
+- Do not include a signature or sign-off -- that's added separately.
+- Do not include any links or company/brand names in the body text.`;
 
 // Subset of the spec's "SERVICES TO OFFER" table — keyed by business_type so the
 // AI pitch stays relevant per-industry without an extra AI call.
@@ -163,25 +165,31 @@ function offerForLead(lead) {
     : 'a professional website with online booking, payments, and an AI chatbot';
 }
 
-// Concrete service names to name-drop in email copy (2-3 per email) rather
-// than the vaguer generic "offer" text alone -- that generic text otherwise
-// anchors the model too hard and crowds these out.
-const EMAIL_KEYWORDS = 'AI voice calling, website revamp, SEO, AEO (answer engine optimization), and GEO (generative engine optimization)';
+// `offer` (from offerForLead/INDUSTRY_OFFERS) is deliberately used only as an
+// internal angle hint below, never as text to quote or name-drop in the
+// email itself -- naming specific services/tools is exactly what pushed
+// every earlier version into Promotions.
 
 // stage: 1=intro (day 0), 2=value (day 3), 3=free redesign offer (day 7), 4=last touch (day 14)
 const STAGE_ANGLES = {
-  1: (offer) =>
-    `This is the FIRST email in the sequence — a short, human introduction.
-Introduce StanWeb briefly. Name-drop 2-3 of these specific services (don't just say "AI automation"): ${EMAIL_KEYWORDS}. Broader context on the offer: ${offer}.`,
+  1: () =>
+    `This is the FIRST email -- reach out directly and personally, like you're writing to
+one specific business owner you looked into, not sending a pitch. Do not introduce a
+company or explain what you do.`,
   2: (offer) =>
-    `This is a FOLLOW-UP email (their 2nd from us, no reply yet) — lead with a concrete value angle, not a re-introduction.
-Focus on the concrete outcome of ${offer} (e.g. fewer missed calls, more booked appointments) — one brief proof point is fine, don't invent specific customer stories or numbers. Name-drop 1-2 of these specific services: ${EMAIL_KEYWORDS}.`,
+    `This is a brief FOLLOW-UP (their 2nd email, no reply yet). Keep the same personal,
+non-pitchy tone -- something like "wanted to follow up on my last note." You can hint
+at the underlying angle (${offer}) in your own words, but don't name it as a product or
+service. Still end with a request for a short conversation.`,
   3: (offer) =>
-    `This is a FOLLOW-UP email (their 3rd from us, no reply yet) — make it easy to say yes.
-Offer a completely FREE website redesign/mockup with no obligation, as a way to show the value of ${offer} before they commit to anything. You can mention: ${EMAIL_KEYWORDS}.`,
-  4: (offer) =>
-    `This is the LAST email in the sequence (their 4th from us, no reply yet) — a brief, polite breakup note.
-Acknowledge this is the last email on this topic, leave the door open, mention ${offer} one more time briefly. No pressure, thank them for their time.`,
+    `This is a brief FOLLOW-UP (their 3rd email, no reply yet). Make it low-effort to say
+yes -- offer to just share a couple of specific ideas for their business (related to:
+${offer}) if they're open to it, still in plain conversational language, not as a
+named offer/product.`,
+  4: () =>
+    `This is the LAST email (their 4th, no reply yet) -- a brief, polite breakup note.
+Acknowledge this is the last note on this, leave the door open, no pressure, thank them
+for their time.`,
 };
 
 /** Deterministic pick from a list, keyed by a string — same lead+stage always
@@ -230,8 +238,8 @@ ${angle}
 The ONE real observation you may reference (use only this, don't add anything else): ${observation || 'they don\'t currently have a strong online presence'}
 
 Return JSON with exactly two fields:
-- "subjects": an array of exactly 5 subject line variants, each 3-5 words, natural and curiosity-driven (not clickbait), no ALL CAPS, no exclamation marks, and none of these words: free, guaranteed, offer, discount, urgent, act now, limited time, winner
-- "body": the plain text email body (90-120 words, 2-4 short paragraphs, ending with the one CTA — no signature, no sign-off, no links)
+- "subjects": an array of exactly 5 subject line variants, each 2-4 words, plain and low-key (like "quick question" or "for {lead.name}"), not curiosity-bait, no ALL CAPS, no exclamation marks, and none of these words: free, guaranteed, offer, discount, urgent, act now, limited time, winner
+- "body": the plain text email body (40-70 words, 2-4 short sentences/paragraphs, ending with the one CTA — no signature, no sign-off, no links, no company name)
 
 Just the JSON object, nothing else.`;
 
@@ -258,8 +266,8 @@ Just the JSON object, nothing else.`;
     if (!subject || !body) throw new Error('AI response missing subject/body');
   } catch (err) {
     logger.error('AI email generation failed, using fallback', { message: err.message, stage });
-    subject = `Quick question for ${lead.name}`;
-    body = `Hi${firstName ? ` ${firstName}` : ''},\n\nI came across ${lead.name} and wanted to reach out — we help businesses like yours with ${offer}.${observation ? ` ${observation}` : ''}\n\nWould you be open to a quick 15-minute call?`;
+    subject = 'quick question';
+    body = `Hi${firstName ? ` ${firstName}` : ''},\n\nI came across ${lead.name} and noticed ${observation || 'you don\'t have a website yet'}. Wanted to reach out directly rather than send a generic pitch.\n\nWould you have 15 minutes this week to talk?`;
   }
 
   // Plain text only, no html field -- live testing showed even the

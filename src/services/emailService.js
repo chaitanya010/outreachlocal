@@ -1,6 +1,7 @@
 'use strict';
 
 const nodemailer = require('nodemailer');
+const { SESv2Client, SendEmailCommand } = require('@aws-sdk/client-sesv2');
 const logger = require('../utils/logger');
 
 const FROM_EMAIL = process.env.SES_FROM_EMAIL;
@@ -12,25 +13,23 @@ function getTransporter() {
   if (transporter) return transporter;
 
   const region = process.env.AWS_REGION;
-  const user = process.env.SES_SMTP_USER;
-  const pass = process.env.SES_SMTP_PASSWORD;
+  const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
   if (!region) throw new Error('AWS_REGION is required');
-  if (!user || !pass) throw new Error('SES_SMTP_USER and SES_SMTP_PASSWORD are required');
+  if (!accessKeyId || !secretAccessKey) {
+    throw new Error('AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are required');
+  }
 
-  transporter = nodemailer.createTransport({
-    host: `email-smtp.${region}.amazonaws.com`,
-    port: 587,
-    secure: false, // STARTTLS on port 587
-    requireTLS: true,
-    auth: { user, pass },
-  });
+  const sesClient = new SESv2Client({ region, credentials: { accessKeyId, secretAccessKey } });
+  transporter = nodemailer.createTransport({ SES: { sesClient, SendEmailCommand } });
   return transporter;
 }
 
 /**
- * Send an email via AWS SES's SMTP interface (SMTP credentials generated
- * from the SES console -> SMTP settings -> Create SMTP credentials; these
- * are NOT the same as an IAM access key/secret).
+ * Send an email via the AWS SES API (SESv2), using an IAM access key/secret
+ * with ses:SendEmail permission. Routed through nodemailer's SES transport
+ * so it builds a proper raw MIME message — needed for attachments, which
+ * SES's plain SendEmail API can't do on its own.
  *
  * @param {object} opts
  * @param {string} opts.to        recipient email

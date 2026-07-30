@@ -5,6 +5,8 @@ const rateLimit = require('express-rate-limit');
 const { validate } = require('./src/config');
 const leadsRouter = require('./src/routes/leads');
 const enrichmentRouter = require('./src/routes/enrichment');
+const outreachRouter = require('./src/routes/outreach');
+const emailSequenceRouter = require('./src/routes/emailSequence');
 const logger = require('./src/utils/logger');
 
 // Validate env on startup
@@ -36,6 +38,8 @@ app.use(
 
 app.use('/', leadsRouter);
 app.use('/', enrichmentRouter);
+app.use('/', outreachRouter);
+app.use('/', emailSequenceRouter);
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
@@ -53,6 +57,10 @@ if (require.main === module) {
   app.listen(PORT, () => {
     logger.info(`OutreachLocal server running on port ${PORT}`);
   });
+
+  if (process.env.ENABLE_EMAIL_CRON !== 'false') {
+    require('./src/jobs/emailCron').start();
+  }
 }
 
 module.exports = app; // exported for tests

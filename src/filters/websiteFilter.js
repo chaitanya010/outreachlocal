@@ -55,8 +55,11 @@ function filterNoWebsite(leads) {
 function annotateWebsiteStatus(leads) {
   for (const lead of leads) {
     lead.has_website = !isInvalidWebsite(lead.website);
-    // Null out social-profile "websites" so the field is clean in DB
+    // Null out social-profile "websites" so the field is clean in DB, but keep
+    // the original URL in social_url — it's the only web presence a no-website
+    // lead has, and the enrichment scraper uses it to find a contact email.
     if (lead.website && isInvalidWebsite(lead.website)) {
+      lead.social_url = lead.website;
       lead.website = null;
     }
   }

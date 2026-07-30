@@ -1,9 +1,16 @@
 const { fetchLeads } = require('../services/googlePlacesService');
 const { annotateWebsiteStatus, filterNoWebsite } = require('../filters/websiteFilter');
 const { upsertLeads } = require('../db/leadsRepository');
+const { scoreLead } = require('../services/prospectScorer');
 const logger = require('../utils/logger');
 
-const DEFAULT_TYPES = ['spa', 'massage', 'hair salon', 'med spa', 'clinic'];
+const DEFAULT_TYPES = [
+  'barbershop', 'nail salon', 'lash studio', 'brow studio', 'tattoo studio',
+  'hair transplant clinic', 'makeup studio', 'skincare center', 'tanning salon',
+  'massage therapy', 'chiropractic clinic', 'physiotherapy', 'dental clinic',
+  'veterinary clinic', 'weight loss clinic', 'wellness center', 'cryotherapy',
+  'iv therapy clinic', 'mental health', 'occupational therapy',
+];
 
 /**
  * Full pipeline: fetch → filter → store.
@@ -33,9 +40,14 @@ async function runPipeline(city, types = DEFAULT_TYPES) {
     hasWebsite: annotated.length - noWebsiteLeads.length,
   });
 
-  // Step 4: Store all leads (has_website flags set correctly)
-  // We store everything so the DB is a full record, not just filtered view
-  const { inserted } = await upsertLeads(annotated);
+  // Step 4: Score every lead for prospect quality
+  const scored = annotated.map((lead) => {
+    const { prospect_score, problems } = scoreLead(lead);
+    return { ...lead, prospect_score, problems };
+  });
+
+  // Step 5: Store all leads with scores
+  const { inserted } = await upsertLeads(scored);
 
   const summary = {
     city,

@@ -14,6 +14,7 @@
 const axios = require('axios');
 const axiosRetry = require('axios-retry').default;
 const { config } = require('../config');
+const { scrapeEmailFromUrl } = require('./websiteEmailScraper');
 const logger = require('../utils/logger');
 
 // ─── Shared axios instance ────────────────────────────────────────────────────
@@ -109,13 +110,23 @@ async function enrichWithApollo(name, city) {
 // ─── Main enrichment function ─────────────────────────────────────────────────
 
 /**
- * Enrich a single lead. Tries Hunter first, then Apollo.
+ * Enrich a single lead. Tries a free website/social-profile scrape first
+ * (no API key needed), then falls back to Hunter, then Apollo.
  * Returns enrichment data or null if nothing found.
  *
- * @param {{ name: string, city: string }} lead
+ * @param {{ name: string, city: string, website?: string, social_url?: string }} lead
  * @returns {Promise<{ email: string|null, domain: string|null }|null>}
  */
 async function enrichLead(lead) {
+  const scrapeUrl = lead.website || lead.social_url;
+  if (scrapeUrl) {
+    const email = await scrapeEmailFromUrl(scrapeUrl);
+    if (email) {
+      logger.debug('Scrape enrichment hit', { name: lead.name, email });
+      return { email, domain: null };
+    }
+  }
+
   const result =
     (await enrichWithHunter(lead.name, lead.city)) ||
     (await enrichWithApollo(lead.name, lead.city));

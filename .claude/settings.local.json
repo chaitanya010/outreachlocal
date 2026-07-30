@@ -3,7 +3,9 @@
     "allow": [
       "Bash(npm install:*)",
       "Bash(npm test:*)",
-      "mcp__code-review-graph__build_or_update_graph_tool"
+      "mcp__code-review-graph__build_or_update_graph_tool",
+      "Bash(node generate-leads.js --city=\"New York, NY\" --types=\"barbershop,nail salon,lash studio,tattoo studio,massage therapy,chiropractic clinic,dental clinic,wellness center,skincare center,mental health\")",
+      "Bash(node export-prospects.js \"New York\" 0)"
     ]
   }
 }

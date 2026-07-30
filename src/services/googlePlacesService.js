@@ -24,11 +24,32 @@ axiosRetry(client, {
 // ─── Supported business types ─────────────────────────────────────────────────
 
 const BUSINESS_TYPE_MAP = {
-  spa:       'spa',
-  massage:   'beauty_salon',
-  'hair salon': 'hair_care',
-  'med spa': 'beauty_salon',
-  clinic:    'doctor',
+  'barbershop':              'barbershop',
+  'nail salon':              'beauty_salon',
+  'lash studio':             'beauty_salon',
+  'brow studio':             'beauty_salon',
+  'tattoo studio':           'point_of_interest',
+  'hair transplant clinic':  'doctor',
+  'makeup studio':           'beauty_salon',
+  'skincare center':         'beauty_salon',
+  'tanning salon':           'beauty_salon',
+  'massage therapy':         'spa',
+  'chiropractic clinic':     'doctor',
+  'physiotherapy':           'physiotherapist',
+  'dental clinic':           'dentist',
+  'veterinary clinic':       'veterinary_care',
+  'weight loss clinic':      'doctor',
+  'wellness center':         'spa',
+  'cryotherapy':             'gym',
+  'iv therapy clinic':       'doctor',
+  'mental health':           'doctor',
+  'occupational therapy':    'doctor',
+  // legacy types kept for backwards compat
+  'spa':                     'spa',
+  'massage':                 'spa',
+  'hair salon':              'hair_care',
+  'med spa':                 'beauty_salon',
+  'clinic':                  'doctor',
 };
 
 // ─── Text Search (handles pagination) ────────────────────────────────────────
@@ -99,7 +120,7 @@ async function getPlaceDetails(placeId) {
   const { data } = await client.get('/details/json', {
     params: {
       place_id: placeId,
-      fields: 'name,formatted_address,formatted_phone_number,website,rating,types',
+      fields: 'name,formatted_address,formatted_phone_number,website,rating,user_ratings_total,types,business_status,reservable,url',
       key: config.google.apiKey,
     },
   });
@@ -121,17 +142,21 @@ async function getPlaceDetails(placeId) {
  * @param {string} city
  * @returns {object}
  */
-function normalizeLead(place, city) {
+function normalizeLead(place, city, businessType) {
   return {
-    place_id: place.place_id,
-    name: place.name,
+    place_id:        place.place_id,
+    name:            place.name,
     city,
-    address: place.formatted_address || place.vicinity || null,
-    phone: place.formatted_phone_number || place.international_phone_number || null,
-    website: place.website || null,
-    has_website: Boolean(place.website),
-    rating: place.rating ?? null,
-    types: place.types || [],
+    address:         place.formatted_address || place.vicinity || null,
+    phone:           place.formatted_phone_number || place.international_phone_number || null,
+    website:         place.website || null,
+    has_website:     Boolean(place.website),
+    rating:          place.rating ?? null,
+    review_count:    place.user_ratings_total ?? 0,
+    has_booking:     Boolean(place.reservable),
+    business_status: place.business_status || 'OPERATIONAL',
+    business_type:   businessType || null,
+    types:           place.types || [],
   };
 }
 
@@ -156,15 +181,13 @@ async function fetchLeads(city, types) {
       if (seen.has(place.place_id)) continue;
       seen.add(place.place_id);
 
-      // Text search doesn't always return website/phone — fetch details if needed
+      // Always fetch details to get review_count, has_booking, business_status
       let enriched = place;
-      if (!place.website || !place.formatted_phone_number) {
-        const details = await getPlaceDetails(place.place_id);
-        if (details) enriched = { ...place, ...details };
-        await sleep(100); // light delay between detail calls
-      }
+      const details = await getPlaceDetails(place.place_id);
+      if (details) enriched = { ...place, ...details };
+      await sleep(150);
 
-      leads.push(normalizeLead(enriched, city));
+      leads.push(normalizeLead(enriched, city, type));
     }
 
     // Delay between type searches to avoid hammering quota

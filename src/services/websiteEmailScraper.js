@@ -45,7 +45,7 @@ const IGNORE_PATTERNS = [
   // Directories, listing aggregators, and third-party booking-widget vendors
   // that commonly get embedded in or linked from a business's own page
   /@(mapquest|superpages|yellowpages|manta|angieslist|thumbtack|chamberofcommerce|bbb)\.(com|org)$/i,
-  /@(massagebook|booksy|schedulicity|vagaro|mindbodyonline|glossgenius|fresha|styleseat|square|squareup|calendly|acuityscheduling)\.com$/i,
+  /@(massagebook|booksy|schedulicity|vagaro|mindbodyonline|glossgenius|fresha|styleseat|square|squareup|calendly|acuityscheduling|giftly|gift(up|card)|toasttab)\.com$/i,
 ];
 
 function extractEmails(html) {
@@ -134,17 +134,21 @@ function distinctiveNameWords(name) {
 }
 
 /**
- * Loose sanity check that a scraped page is actually about this business —
- * catches a search result that ranked for the query but is really some
- * unrelated organization's page. If the name is entirely generic words
- * (nothing distinctive to check), this can't verify anything either way, so
- * it doesn't block — it's a best-effort filter, not a guarantee.
+ * Sanity check that a scraped page is actually about this business — catches
+ * a search result that ranked for the query but is really some unrelated
+ * organization's page. Requires at least 2 distinctive name words on the
+ * page (or the ONE available word if the name genuinely has only one).
+ * A single generic-ish word ("testing" from "Medical Testing Center") isn't
+ * enough evidence — for names with too little distinctive signal to check,
+ * this rejects rather than risks emailing the wrong organization.
  */
 function pageMatchesBusiness(html, name) {
   const words = distinctiveNameWords(name);
-  if (!words.length) return true;
+  if (words.length === 0) return false;
   const lower = (html || '').toLowerCase();
-  return words.some((w) => lower.includes(w));
+  const matchCount = words.filter((w) => lower.includes(w)).length;
+  const required = words.length === 1 ? 1 : 2;
+  return matchCount >= required;
 }
 
 // ─── Web search fallback (no website/social_url on file at all) ──────────────

@@ -2,7 +2,7 @@
 
 const OpenAI = require('openai');
 const logger = require('../utils/logger');
-const { unsubLink, unsubHeaders } = require('../utils/unsubscribe');
+const { unsubHeaders } = require('../utils/unsubscribe');
 const { buildSignature } = require('../utils/signature');
 const { getColdCallContext } = require('./prospectScorer');
 
@@ -223,7 +223,6 @@ Return JSON with exactly two fields:
 
 Just the JSON object, nothing else.`;
 
-  const unsub = lead.email ? unsubLink(lead.email) : null;
   const headers = lead.email ? unsubHeaders(lead.email) : undefined;
 
   let subject;
@@ -251,17 +250,21 @@ Just the JSON object, nothing else.`;
     body = `Hi${firstName ? ` ${firstName}` : ''},\n\nI came across ${lead.name} and wanted to reach out — we help businesses like yours with ${offer}.${observation ? ` ${observation}` : ''}\n\nWould you be open to a quick 15-minute call?`;
   }
 
-  const text = assembleEmailText(body, unsub);
+  const text = assembleEmailText(body);
   return { subject, text, headers };
 }
 
-/** Appends the fixed signature + respectful unsubscribe line to an AI-generated body. */
-function assembleEmailText(body, unsub) {
-  const parts = [body.trim(), '', buildSignature()];
-  if (unsub) {
-    parts.push('', `If this isn't relevant, simply reply "No thanks" and I won't reach out again. Unsubscribe: ${unsub}`);
-  }
-  return parts.join('\n');
+/**
+ * Appends the fixed signature to an AI-generated body. No visible
+ * "unsubscribe" text/link in the body -- that phrase + link is a classic
+ * bulk-marketing-email signal that pushes Gmail's classifier toward
+ * Promotions. The actual opt-out mechanism is unaffected: unsubHeaders()
+ * still sets the List-Unsubscribe / List-Unsubscribe-Post headers (used for
+ * Gmail's native one-click unsubscribe UI next to the sender name), which
+ * is invisible in the body and doesn't carry the same signal.
+ */
+function assembleEmailText(body) {
+  return [body.trim(), '', buildSignature()].join('\n');
 }
 
 /**

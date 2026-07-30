@@ -22,6 +22,16 @@ const CONTACT_EMAIL = process.env.SES_FROM_EMAIL || 'contact@stanweb.tech';
 const WHATSAPP_RAW = process.env.WHATSAPP_SIGNATURE_NUMBER || '';
 const PHONE_NUMBER = process.env.SENDER_PHONE || '';
 
+// Deliverability isolation testing found the fuller signature (email +
+// Calendly link + WhatsApp) landing in Gmail's Promotions tab even after
+// trimming to 1-2 links. Defaults to name/title only -- the barest possible
+// signature -- while this gets tested; contact details are still reachable
+// via Reply-To (set on every send regardless of signature content), so
+// nothing about replying is actually broken by omitting them here. Set
+// SIGNATURE_INCLUDE_CONTACT=true to bring the contact lines back once
+// inbox-vs-promotions placement is confirmed either way.
+const INCLUDE_CONTACT = process.env.SIGNATURE_INCLUDE_CONTACT === 'true';
+
 // Accepts either a raw number or a wa.me/https://wa.me/<number> link and
 // always displays just the plain digits, so it never renders as a clickable
 // URL (which would count against the link-count budget above).
@@ -32,7 +42,10 @@ function whatsappDisplayNumber(raw) {
 }
 
 function buildSignature() {
-  const lines = [NAME, TITLE, '', CONTACT_EMAIL];
+  const lines = [NAME, TITLE];
+  if (!INCLUDE_CONTACT) return lines.join('\n');
+
+  lines.push('', CONTACT_EMAIL);
   if (CALENDLY_URL) lines.push(`Book a call: ${CALENDLY_URL}`);
   const whatsapp = whatsappDisplayNumber(WHATSAPP_RAW);
   if (whatsapp) lines.push(`WhatsApp: ${whatsapp}`);

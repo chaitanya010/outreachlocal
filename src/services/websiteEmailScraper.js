@@ -19,19 +19,26 @@ const client = axios.create({
 
 const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
 
-// Emails that are technically valid but never a real business contact:
-// analytics/error-tracking pixels, file names the regex misparses as an
-// email (foo@bar.pdf has a valid-looking 3-letter "TLD"), third-party
+// Allowlist of real TLDs, rather than blacklisting fake ones — file names
+// embedded in a page (e.g. "report-2026-final.apr") can look exactly like an
+// email to EMAIL_RE since any 2+ letter suffix passes as a "TLD"; blocking
+// them one extension at a time is whack-a-mole. Curated for US local
+// business email domains (.com/.org/.net/.us/.gov/.edu, common alternates).
+const VALID_TLDS = new Set([
+  'com', 'net', 'org', 'edu', 'gov', 'mil', 'us', 'co', 'io', 'info', 'biz', 'me', 'name', 'pro',
+]);
+
+// Emails that are technically valid, real-TLD addresses but never a real
+// business contact: analytics/error-tracking pixels, third-party
 // directories/listing aggregators, and booking-platform support addresses
-// that show up embedded in a business's page instead of the business's own.
+// that show up embedded in or linked from a business's page.
 const IGNORE_PATTERNS = [
-  // Non-email files whose extension looks like a TLD to the regex
-  /\.(png|jpe?g|gif|svg|webp|pdf|docx?|xlsx?|pptx?|zip|rar|7z|mp3|mp4|mov|avi|css|js|json|xml|csv|txt|ico|woff2?|ttf|eot)$/i,
   // Platform/template system addresses
   /^(info|support)@(wixpress|godaddy|squarespace|weebly|shopify)\.com$/i,
   /@(schema\.org|w3\.org|googleapis\.com|gstatic\.com|example\.com|domain\.com|mystore\.com)$/i,
-  // Sentry error-tracking DSNs embedded in page JS (e.g. <hash>@o12345.ingest.us.sentry.io) — not an email
-  /(^|\.)sentry\.io$/i,
+  // Sentry error-tracking DSNs embedded in page JS — <hash>@sentry.io or
+  // <hash>@<project-id>.ingest.<region>.sentry.io — not an email
+  /@([a-z0-9-]+\.)*sentry\.io$/i,
   /^(noreply|no-reply|donotreply)@/i,
   // Search engines / social platforms (support inboxes, not the business)
   /@(duckduckgo|google|bing|yahoo|facebook|instagram)\.com$/i,
@@ -45,7 +52,11 @@ function extractEmails(html) {
   if (!html) return [];
   const matches = html.match(EMAIL_RE) || [];
   const unique = [...new Set(matches.map((e) => e.toLowerCase()))];
-  return unique.filter((email) => !IGNORE_PATTERNS.some((re) => re.test(email)));
+  return unique.filter((email) => {
+    const tld = email.split('.').pop();
+    if (!VALID_TLDS.has(tld)) return false;
+    return !IGNORE_PATTERNS.some((re) => re.test(email));
+  });
 }
 
 async function fetchPage(url) {

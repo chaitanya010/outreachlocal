@@ -23,7 +23,6 @@ const {
 } = require('../db/leadsRepository');
 const { generateEmail } = require('./aiMessageService');
 const { sendEmail } = require('./emailService');
-const { getDeckAttachment } = require('../utils/deckAttachment');
 const logger = require('../utils/logger');
 
 // Overall safety valve on total sequence volume/day (new + follow-ups).
@@ -36,12 +35,13 @@ const MAX_JITTER_MINUTES = 45;
 
 async function sendStage(lead, stage) {
   const content = await generateEmail(lead, stage);
-  const attachments = stage === 1 ? [getDeckAttachment()].filter(Boolean) : undefined;
+  // No attachment on any automated sequence stage -- an unsolicited
+  // attachment (even on a later follow-up) is a spam-filter risk on cold
+  // outreach. The deck is sent manually once someone replies with interest.
   const result = await sendEmail({
     to: lead.email,
     replyTo: process.env.SES_FROM_EMAIL,
     ...content,
-    attachments,
   });
 
   await recordEmailStageSent(lead.place_id, stage);

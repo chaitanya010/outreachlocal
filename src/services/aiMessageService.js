@@ -107,9 +107,9 @@ Just the message text, nothing else.`;
 // facts, never use HTML/emojis/hype, one CTA, one genuine observation.
 const EMAIL_SYSTEM_PROMPT = `You write cold outreach emails for StanWeb.tech, a service that helps local
 businesses (salons, spas, clinics, med spas, and similar) reduce no-shows and drop-offs
-and bring in more recurring/repeat business, using AI voice receptionists, AI phone
-calling, appointment automation, CRM setup, website revamps/development, AI chatbots,
-and workflow automation.
+and bring in more recurring/repeat business, using AI voice calling, website revamps,
+SEO, AEO (answer engine optimization), GEO (generative engine optimization), appointment
+automation, CRM setup, and AI chatbots.
 
 Rules -- follow all of these exactly:
 - Write like a real person emailing another business owner, not a marketer or an agency.
@@ -119,8 +119,9 @@ Rules -- follow all of these exactly:
 - Include exactly ONE genuine personalized observation, using ONLY the specific fact(s)
   given to you below. Never invent a detail that wasn't given to you.
 - Frame the pitch around the outcome (fewer no-shows/drop-offs, more repeat/recurring
-  clients), not a feature list -- mention the relevant tool (AI automation, chatbot,
-  website, etc.) only briefly, in service of that outcome.
+  clients), not a feature list -- but naturally work in 2-3 of the specific service
+  names (AI voice calling, website revamp, SEO, AEO, GEO) rather than vague terms like
+  "AI automation" alone, so the recipient knows concretely what's being offered.
 - Include exactly ONE call to action, and it must be a reply, not a link or booking
   request (e.g. "Worth a quick reply if this sounds useful?" or "Want me to share how
   this could work for you? Just reply and I will.").
@@ -162,17 +163,22 @@ function offerForLead(lead) {
     : 'a professional website with online booking, payments, and an AI chatbot';
 }
 
+// Concrete service names to name-drop in email copy (2-3 per email) rather
+// than the vaguer generic "offer" text alone -- that generic text otherwise
+// anchors the model too hard and crowds these out.
+const EMAIL_KEYWORDS = 'AI voice calling, website revamp, SEO, AEO (answer engine optimization), and GEO (generative engine optimization)';
+
 // stage: 1=intro (day 0), 2=value (day 3), 3=free redesign offer (day 7), 4=last touch (day 14)
 const STAGE_ANGLES = {
   1: (offer) =>
     `This is the FIRST email in the sequence — a short, human introduction.
-Introduce StanWeb briefly and pitch: ${offer}.`,
+Introduce StanWeb briefly. Name-drop 2-3 of these specific services (don't just say "AI automation"): ${EMAIL_KEYWORDS}. Broader context on the offer: ${offer}.`,
   2: (offer) =>
     `This is a FOLLOW-UP email (their 2nd from us, no reply yet) — lead with a concrete value angle, not a re-introduction.
-Focus on the concrete outcome of ${offer} (e.g. fewer missed calls, more booked appointments) — one brief proof point is fine, don't invent specific customer stories or numbers.`,
+Focus on the concrete outcome of ${offer} (e.g. fewer missed calls, more booked appointments) — one brief proof point is fine, don't invent specific customer stories or numbers. Name-drop 1-2 of these specific services: ${EMAIL_KEYWORDS}.`,
   3: (offer) =>
     `This is a FOLLOW-UP email (their 3rd from us, no reply yet) — make it easy to say yes.
-Offer a completely FREE website redesign/mockup with no obligation, as a way to show the value of ${offer} before they commit to anything.`,
+Offer a completely FREE website redesign/mockup with no obligation, as a way to show the value of ${offer} before they commit to anything. You can mention: ${EMAIL_KEYWORDS}.`,
   4: (offer) =>
     `This is the LAST email in the sequence (their 4th from us, no reply yet) — a brief, polite breakup note.
 Acknowledge this is the last email on this topic, leave the door open, mention ${offer} one more time briefly. No pressure, thank them for their time.`,
@@ -256,9 +262,14 @@ Just the JSON object, nothing else.`;
     body = `Hi${firstName ? ` ${firstName}` : ''},\n\nI came across ${lead.name} and wanted to reach out — we help businesses like yours with ${offer}.${observation ? ` ${observation}` : ''}\n\nWould you be open to a quick 15-minute call?`;
   }
 
+  // Plain text only, no html field -- live testing showed even the
+  // minimal-HTML "letter" style (Georgia serif, no colors/buttons, modeled
+  // on FootWord's proven templates) still landed in Promotions for this
+  // domain's current sending reputation, while a completely bare plain-text
+  // email with no HTML part at all landed in the Inbox. buildHtml() is kept
+  // for reference/re-testing later, just not used in the default send path.
   const text = assembleEmailText(body);
-  const html = buildHtml(body);
-  return { subject, text, html, headers };
+  return { subject, text, headers };
 }
 
 /**

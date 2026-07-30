@@ -1,6 +1,7 @@
 'use strict';
 
 const nodemailer = require('nodemailer');
+const { SESv2Client, SendEmailCommand } = require('@aws-sdk/client-sesv2');
 const logger = require('../utils/logger');
 
 const FROM_EMAIL = process.env.SES_FROM_EMAIL;
@@ -11,25 +12,27 @@ let transporter = null;
 function getTransporter() {
   if (transporter) return transporter;
 
-  const host = process.env.AWS_SES_ENDPOINT;
-  const port = parseInt(process.env.AWS_SES_PORT || '587', 10);
-  const user = process.env.AWS_SES_USERNAME;
-  const pass = process.env.AWS_SES_PASSWORD;
-  if (!host) throw new Error('AWS_SES_ENDPOINT is required');
-  if (!user || !pass) throw new Error('AWS_SES_USERNAME and AWS_SES_PASSWORD are required');
+  const region = process.env.AWS_REGION;
+  const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
+  if (!region) throw new Error('AWS_REGION is required');
+  if (!accessKeyId || !secretAccessKey) {
+    throw new Error('AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are required');
+  }
 
-  transporter = nodemailer.createTransport({
-    host,
-    port,
-    secure: port === 465,
-    requireTLS: port !== 465,
-    auth: { user, pass },
-  });
+  const sesClient = new SESv2Client({ region, credentials: { accessKeyId, secretAccessKey } });
+  transporter = nodemailer.createTransport({ SES: { sesClient, SendEmailCommand } });
   return transporter;
 }
 
 /**
- * Send an email via AWS SES's SMTP interface.
+ * Send an email via the AWS SES API (HTTPS, not SMTP). Switched from SMTP
+ * after discovering Railway blocks outbound SMTP ports (25/465/587/2525) on
+ * its Free/Trial/Hobby plans -- production sends were silently hanging.
+ * HTTPS isn't blocked, so this sidesteps the issue without needing a paid
+ * Railway plan. Uses an IAM access key/secret with ses:SendEmail permission
+ * (not the SMTP username/password -- those are a different, SMTP-only
+ * credential derived from an IAM secret and not valid for direct API calls).
  *
  * @param {object} opts
  * @param {string} opts.to        recipient email

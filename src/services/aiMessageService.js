@@ -206,7 +206,8 @@ function greetingName(lead) {
 /**
  * Generate a personalized email subject (one of 5 variants, deterministically
  * picked) + body for a lead at a given sequence stage (1=intro, 2=value,
- * 3=free-redesign offer, 4=last touch). Plain text only — no HTML, no
+ * 3=free-redesign offer, 4=last touch). Sends both html (minimal
+ * "personal letter" style, see buildHtml) and a plain-text fallback — no
  * attachments (those are handled outside this function, never automatically
  * on first contact).
  */
@@ -256,7 +257,8 @@ Just the JSON object, nothing else.`;
   }
 
   const text = assembleEmailText(body);
-  return { subject, text, headers };
+  const html = buildHtml(body);
+  return { subject, text, html, headers };
 }
 
 /**
@@ -270,6 +272,30 @@ Just the JSON object, nothing else.`;
  */
 function assembleEmailText(body) {
   return [body.trim(), '', buildSignature()].join('\n');
+}
+
+// Minimal "personal letter" HTML shell, modeled directly on FootWord's
+// mail.js (a sibling project's outreach templates, confirmed via live Gmail
+// testing to consistently land in the Inbox across 50+ sends): serif font,
+// narrow width, no colors/buttons/banners. The FootWord code comment says it
+// best -- "marketing chrome (colors, big CTAs, promo words) is what lands
+// mail in Gmail's Promotions tab; this reads like a note from a person."
+function buildHtml(body) {
+  const paragraphs = body
+    .trim()
+    .split(/\n\n+/)
+    .map((p) => `<p>${p.replace(/\n/g, '<br>')}</p>`)
+    .join('\n');
+  const signatureHtml = buildSignature()
+    .split('\n')
+    .filter(Boolean)
+    .join('<br>');
+
+  return `<!doctype html><html><body style="margin:0;padding:18px;background:#ffffff">
+<div style="max-width:540px;margin:0 auto;font-family:Georgia,'Times New Roman',serif;font-size:16px;line-height:1.55;color:#222">
+${paragraphs}
+<p>${signatureHtml}</p>
+</div></body></html>`;
 }
 
 /**

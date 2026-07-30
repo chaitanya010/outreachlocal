@@ -9,8 +9,12 @@ const DEFAULT_TYPES = [
   'hair transplant clinic', 'makeup studio', 'skincare center', 'tanning salon',
   'massage therapy', 'chiropractic clinic', 'physiotherapy', 'dental clinic',
   'veterinary clinic', 'weight loss clinic', 'wellness center', 'cryotherapy',
-  'iv therapy clinic', 'mental health', 'occupational therapy',
+  'iv therapy clinic', 'private therapy practice', 'occupational therapy',
 ];
+// Note: "mental health" (too broad) pulled in a NY State government mental
+// health department in production, whose email was a .gov address — not a
+// buyer. Narrowed to "private therapy practice"; institutionalFilter.js is
+// the real backstop against this class of false positive going forward.
 
 /**
  * Full pipeline: fetch → filter → store.

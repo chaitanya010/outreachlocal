@@ -1,6 +1,7 @@
 'use strict';
 
 const { getClient } = require('./supabaseClient');
+const { isLikelyRealBusiness } = require('../filters/institutionalFilter');
 const logger = require('../utils/logger');
 
 const TABLE = 'leads';
@@ -254,6 +255,7 @@ async function getEmailSequenceCandidates(limit = 20) {
   const now = Date.now();
   const due = (data || [])
     .filter((lead) => lead.email_stage === 0 || lead.email_stage < 4)
+    .filter(isLikelyRealBusiness) // screen out government/institutional false positives
     .map((lead) => {
       const stage = lead.email_stage || 0;
       if (stage === 0) return { lead, nextStage: 1, isNew: true };

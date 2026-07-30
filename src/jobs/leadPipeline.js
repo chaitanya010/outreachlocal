@@ -4,6 +4,12 @@ const { upsertLeads } = require('../db/leadsRepository');
 const { scoreLead } = require('../services/prospectScorer');
 const logger = require('../utils/logger');
 
+// Kept intentionally small (unlike the 100+-niche discovery/nicheLibrary.js,
+// which the automated daily discovery pipeline rotates through a handful at
+// a time) — this is the default for the manual /generate-leads endpoint,
+// which runs every type sequentially in one call; a 100+-item default would
+// make a single manual run far slower/costlier without an explicit ask.
+// Pass `types` explicitly to search anything from the full niche library.
 const DEFAULT_TYPES = [
   'barbershop', 'nail salon', 'lash studio', 'brow studio', 'tattoo studio',
   'hair transplant clinic', 'makeup studio', 'skincare center', 'tanning salon',
@@ -11,10 +17,10 @@ const DEFAULT_TYPES = [
   'veterinary clinic', 'weight loss clinic', 'wellness center', 'cryotherapy',
   'iv therapy clinic', 'private therapy practice', 'occupational therapy',
 ];
-// Note: "mental health" (too broad) pulled in a NY State government mental
-// health department in production, whose email was a .gov address — not a
-// buyer. Narrowed to "private therapy practice"; institutionalFilter.js is
-// the real backstop against this class of false positive going forward.
+// Note: an earlier version of this list included "mental health" (too broad
+// — pulled in a NY State government mental health department in production,
+// whose email was a .gov address, not a buyer); institutionalFilter.js is
+// the real backstop against that class of false positive now.
 
 /**
  * Full pipeline: fetch → filter → store.

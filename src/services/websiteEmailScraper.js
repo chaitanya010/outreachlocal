@@ -185,11 +185,13 @@ function extractSearchResultUrls(html) {
 }
 
 /**
- * Real search via Serper.dev (Google results as JSON, no scraping/CAPTCHA
- * involved) — used when SERPER_API_KEY is configured. Returns an array of
- * result URLs, or null if not configured / the request failed.
+ * Raw Serper.dev search — the full response JSON (organic results, and for
+ * local-intent queries like "best plumbers in Austin", a `places` array
+ * mirroring Google's local pack). Used by both searchViaSerper (email
+ * discovery) and discovery/bestOfCitySource.js (business discovery).
+ * Returns null if SERPER_API_KEY isn't configured or the request failed.
  */
-async function searchViaSerper(query) {
+async function serperSearch(query) {
   const apiKey = process.env.SERPER_API_KEY;
   if (!apiKey) return null;
 
@@ -199,12 +201,23 @@ async function searchViaSerper(query) {
       { q: query },
       { headers: { 'X-API-KEY': apiKey, 'Content-Type': 'application/json' } }
     );
-    const organic = data?.organic || [];
-    return organic.map((r) => r.link).filter(Boolean);
+    return data;
   } catch (err) {
     logger.warn('websiteEmailScraper: Serper search failed', { query, message: err.message });
     return null;
   }
+}
+
+/**
+ * Real search via Serper.dev (Google results as JSON, no scraping/CAPTCHA
+ * involved) — used when SERPER_API_KEY is configured. Returns an array of
+ * result URLs, or null if not configured / the request failed.
+ */
+async function searchViaSerper(query) {
+  const data = await serperSearch(query);
+  if (!data) return null;
+  const organic = data.organic || [];
+  return organic.map((r) => r.link).filter(Boolean);
 }
 
 /**
@@ -257,4 +270,180 @@ async function searchWebForEmail(name, city) {
   return null;
 }
 
-module.exports = { scrapeEmailFromUrl, searchWebForEmail, extractEmails };
+// ─── Discovery pipeline: decision-maker contact extraction ────────────────────
+//
+// Used by the new discovery pipeline (leadScorer/discoveryPipeline), not by
+// the existing enrichmentService backfill path -- kept additive so nothing
+// about today's enrichment behavior changes.
+
+const TEAM_PATHS = ['/team', '/our-team', '/meet-the-team', '/staff', '/about-us', '/doctors', '/providers'];
+
+const GENERIC_LOCAL_PARTS =
+  /^(info|contact|hello|office|admin|support|frontdesk|front-desk|reception|team|sales|bookings?|appointments?|help|service|hi)$/i;
+
+/**
+ * "high" = looks like a real person's mailbox (firstname@, firstname.lastname@),
+ * "medium" = generic role-based inbox (info@, contact@, etc) -- still a
+ * legitimate send target per the "owner email OR general business email" spec,
+ * just lower confidence it reaches a specific decision maker.
+ */
+function classifyEmailConfidence(email) {
+  if (!email) return null;
+  const local = email.split('@')[0];
+  if (GENERIC_LOCAL_PARTS.test(local)) return 'medium';
+  if (/^[a-z]+(\.[a-z]+)?[0-9]*$/i.test(local)) return 'high';
+  return 'medium';
+}
+
+/**
+ * Best-effort parse of schema.org JSON-LD blocks for an email and/or a
+ * founder/employee name -- real structured data when a site has it, not a
+ * guess.
+ */
+function extractFromSchemaOrg(html) {
+  if (!html) return null;
+  const blocks = [...html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)];
+
+  for (const block of blocks) {
+    let parsed;
+    try {
+      parsed = JSON.parse(block[1]);
+    } catch {
+      continue;
+    }
+    const nodes = Array.isArray(parsed) ? parsed : [parsed];
+
+    for (const node of nodes) {
+      if (!node || typeof node !== 'object') continue;
+      const email = typeof node.email === 'string' ? node.email : null;
+      const person = node.founder || node.employee;
+      const personNode = Array.isArray(person) ? person[0] : person;
+      const name = personNode?.name || null;
+      const role = node.founder ? 'Founder' : personNode ? 'Employee' : null;
+      if (email || name) return { email, name, role };
+    }
+  }
+  return null;
+}
+
+const ROLE_WORDS = 'Owner|Founder|Practice Manager|Office Manager|General Manager|Manager';
+const DECISION_MAKER_RE_A = new RegExp(`(?:${ROLE_WORDS})[:\\-–]?\\s+((?:Dr\\.\\s*)?[A-Z][a-zA-Z'-]+\\s[A-Z][a-zA-Z'-]+)`);
+const DECISION_MAKER_RE_B = new RegExp(`((?:Dr\\.\\s*)?[A-Z][a-zA-Z'-]+\\s[A-Z][a-zA-Z'-]+)[,\\-–]\\s*(${ROLE_WORDS})`);
+
+/**
+ * Lightweight regex heuristic over raw page text -- looks for "Owner: Jane
+ * Smith" / "Jane Smith, Founder" style patterns near team/about page
+ * content. Best-effort; a miss just means no name, not a wrong answer.
+ */
+function extractDecisionMaker(html) {
+  if (!html) return null;
+  const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+
+  const matchA = text.match(DECISION_MAKER_RE_A);
+  if (matchA) return { name: matchA[1], role: matchA[0].split(/[:\-–]/)[0].trim() };
+
+  const matchB = text.match(DECISION_MAKER_RE_B);
+  if (matchB) return { name: matchB[1], role: matchB[2] };
+
+  return null;
+}
+
+function pickBestEmail(emails, decisionMakerName) {
+  if (decisionMakerName) {
+    const first = decisionMakerName.toLowerCase().replace(/^dr\.\s*/, '').split(/\s+/)[0];
+    const match = emails.find((e) => e.split('@')[0].toLowerCase().includes(first));
+    if (match) return match;
+  }
+  const personal = emails.find((e) => classifyEmailConfidence(e) === 'high');
+  return personal || emails[0];
+}
+
+/**
+ * Richer contact discovery for the daily discovery pipeline: crawls contact
+ * + team/staff/about-us pages, cross-checks schema.org structured data,
+ * extracts a decision-maker name/role where findable, and returns a
+ * confidence-scored result instead of a bare email string.
+ *
+ * @param {string} baseUrl        candidate's website or social_url
+ * @param {object} [opts]
+ * @param {string} [opts.baseHtml]  HTML already fetched for baseUrl (e.g. by
+ *   websiteAnalyzer) -- reused instead of fetching baseUrl a second time.
+ * @param {(html: string) => boolean} [opts.verify]  page-verification callback
+ * @returns {Promise<{ email: string, confidence: string, decisionMakerName: string|null, decisionMakerRole: string|null, sourcePage: string } | null>}
+ */
+async function crawlForContact(baseUrl, { baseHtml, verify } = {}) {
+  if (!baseUrl) return null;
+
+  let base;
+  try {
+    base = new URL(baseUrl);
+  } catch {
+    return null;
+  }
+
+  const pagesToTry = [baseUrl];
+  if (!SOCIAL_HOST_RE.test(base.hostname)) {
+    for (const path of ['/contact', '/contact-us', '/about', ...TEAM_PATHS]) {
+      pagesToTry.push(`${base.protocol}//${base.host}${path}`);
+    }
+  }
+
+  for (const pageUrl of pagesToTry) {
+    const html = pageUrl === baseUrl && baseHtml ? baseHtml : await fetchPage(pageUrl);
+    if (!html) continue;
+    if (verify && !verify(html)) continue;
+
+    const emails = extractEmails(html);
+    if (!emails.length) continue;
+
+    const schemaContact = extractFromSchemaOrg(html);
+    const decisionMaker = extractDecisionMaker(html) || schemaContact;
+    const best = pickBestEmail(emails, decisionMaker?.name);
+
+    return {
+      email: best,
+      confidence: classifyEmailConfidence(best),
+      decisionMakerName: decisionMaker?.name || null,
+      decisionMakerRole: decisionMaker?.role || null,
+      sourcePage: pageUrl,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Same web-search fallback as searchWebForEmail, but returns the richer
+ * crawlForContact result (confidence + decision-maker) instead of a bare
+ * email string. Used by the discovery pipeline for candidates with no known
+ * website/social_url at all (mainly Yelp-sourced candidates).
+ */
+async function discoverContactViaWebSearch(name, city) {
+  if (!name) return null;
+
+  const query = `${name} ${city || ''}`.trim();
+  const urls = (await searchViaSerper(query)) ?? (await searchViaDuckDuckGo(query));
+  if (!urls) return null;
+
+  const verify = (html) => pageMatchesBusiness(html, name);
+
+  for (const url of urls.slice(0, MAX_RESULTS_TO_TRY)) {
+    const result = await crawlForContact(url, { verify });
+    if (result) return result;
+  }
+
+  return null;
+}
+
+module.exports = {
+  scrapeEmailFromUrl,
+  searchWebForEmail,
+  extractEmails,
+  crawlForContact,
+  discoverContactViaWebSearch,
+  classifyEmailConfidence,
+  extractDecisionMaker,
+  extractFromSchemaOrg,
+  searchViaSerper,
+  serperSearch,
+};

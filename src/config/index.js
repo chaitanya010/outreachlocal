@@ -13,6 +13,9 @@ const config = {
     apolloKey: process.env.APOLLO_API_KEY,
     hunterKey: process.env.HUNTER_API_KEY,
   },
+  yelp: {
+    apiKey: process.env.YELP_API_KEY,
+  },
   server: {
     port: parseInt(process.env.PORT, 10) || 3000,
     env: process.env.NODE_ENV || 'development',

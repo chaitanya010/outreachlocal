@@ -7,6 +7,7 @@ const leadsRouter = require('./src/routes/leads');
 const enrichmentRouter = require('./src/routes/enrichment');
 const outreachRouter = require('./src/routes/outreach');
 const emailSequenceRouter = require('./src/routes/emailSequence');
+const discoveryRouter = require('./src/routes/discovery');
 const logger = require('./src/utils/logger');
 
 // Validate env on startup
@@ -40,6 +41,7 @@ app.use('/', leadsRouter);
 app.use('/', enrichmentRouter);
 app.use('/', outreachRouter);
 app.use('/', emailSequenceRouter);
+app.use('/', discoveryRouter);
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
@@ -60,6 +62,10 @@ if (require.main === module) {
 
   if (process.env.ENABLE_EMAIL_CRON !== 'false') {
     require('./src/jobs/emailCron').start();
+  }
+
+  if (process.env.ENABLE_DISCOVERY_CRON !== 'false') {
+    require('./src/jobs/discoveryCron').start();
   }
 }
 

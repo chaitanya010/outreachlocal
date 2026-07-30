@@ -410,6 +410,61 @@ async function getEmailSequenceStats() {
   return { ...stageCounts, sentToday };
 }
 
+// ─── Discovery pipeline: niche/geo rotation history ───────────────────────────
+
+const SEARCH_HISTORY_TABLE = 'search_history';
+
+/**
+ * (niche, city) pairs searched within the last `days` days, as "niche|city"
+ * keys — used by rotation.js to exclude recently-mined pairs from today's pick.
+ */
+async function getRecentSearchHistory(days = 180) {
+  const db = getClient();
+  const since = new Date(Date.now() - days * 86400000).toISOString();
+  const { data, error } = await db
+    .from(SEARCH_HISTORY_TABLE)
+    .select('niche, city')
+    .gte('searched_at', since);
+
+  if (error) {
+    logger.error('getRecentSearchHistory failed', { message: error.message });
+    throw error;
+  }
+  return new Set((data || []).map((r) => `${r.niche}|${r.city}`));
+}
+
+/**
+ * Record today's (niche, city, state) picks so future runs exclude them for
+ * the cooldown window.
+ */
+async function recordSearchHistory(pairs) {
+  if (!pairs.length) return;
+  const db = getClient();
+  const rows = pairs.map((p) => ({ niche: p.niche, city: p.city, state: p.state }));
+  const { error } = await db.from(SEARCH_HISTORY_TABLE).insert(rows);
+  if (error) {
+    logger.error('recordSearchHistory failed', { message: error.message });
+    throw error;
+  }
+}
+
+// ─── Discovery pipeline: dedup against existing leads ─────────────────────────
+
+/**
+ * The identifiers already in the `leads` table, for candidate-pool dedup
+ * before anything gets scored/enriched: place_id, normalized domain, and
+ * email. Pulled once per pipeline run rather than queried per-candidate.
+ */
+async function getExistingLeadIdentifiers() {
+  const db = getClient();
+  const { data, error } = await db.from(TABLE).select('place_id, domain, email, name, city');
+  if (error) {
+    logger.error('getExistingLeadIdentifiers failed', { message: error.message });
+    throw error;
+  }
+  return data || [];
+}
+
 module.exports = {
   upsertLeads,
   getLeads,
@@ -428,4 +483,7 @@ module.exports = {
   countNewLeadEmailsSentToday,
   getLastEmailSendTime,
   getEmailSequenceStats,
+  getRecentSearchHistory,
+  recordSearchHistory,
+  getExistingLeadIdentifiers,
 };

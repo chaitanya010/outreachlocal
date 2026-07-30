@@ -19,13 +19,26 @@ const client = axios.create({
 
 const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
 
-// Emails that are technically valid but never a real business contact.
+// Emails that are technically valid but never a real business contact:
+// analytics/error-tracking pixels, file names the regex misparses as an
+// email (foo@bar.pdf has a valid-looking 3-letter "TLD"), third-party
+// directories/listing aggregators, and booking-platform support addresses
+// that show up embedded in a business's page instead of the business's own.
 const IGNORE_PATTERNS = [
-  /\.(png|jpe?g|gif|svg|webp)$/i,
+  // Non-email files whose extension looks like a TLD to the regex
+  /\.(png|jpe?g|gif|svg|webp|pdf|docx?|xlsx?|pptx?|zip|rar|7z|mp3|mp4|mov|avi|css|js|json|xml|csv|txt|ico|woff2?|ttf|eot)$/i,
+  // Platform/template system addresses
   /^(info|support)@(wixpress|godaddy|squarespace|weebly|shopify)\.com$/i,
-  /@(sentry\.io|schema\.org|w3\.org|googleapis\.com|gstatic\.com|example\.com|domain\.com)$/i,
+  /@(schema\.org|w3\.org|googleapis\.com|gstatic\.com|example\.com|domain\.com|mystore\.com)$/i,
+  // Sentry error-tracking DSNs embedded in page JS (e.g. <hash>@o12345.ingest.us.sentry.io) — not an email
+  /(^|\.)sentry\.io$/i,
   /^(noreply|no-reply|donotreply)@/i,
+  // Search engines / social platforms (support inboxes, not the business)
   /@(duckduckgo|google|bing|yahoo|facebook|instagram)\.com$/i,
+  // Directories, listing aggregators, and third-party booking-widget vendors
+  // that commonly get embedded in or linked from a business's own page
+  /@(mapquest|superpages|yellowpages|manta|angieslist|thumbtack|chamberofcommerce|bbb)\.(com|org)$/i,
+  /@(massagebook|booksy|schedulicity|vagaro|mindbodyonline|glossgenius|fresha|styleseat|square|squareup|calendly|acuityscheduling)\.com$/i,
 ];
 
 function extractEmails(html) {
@@ -55,9 +68,14 @@ const SOCIAL_HOST_RE = /facebook\.com|instagram\.com|twitter\.com|x\.com|yelp\.c
  * profile URLs are only checked as-is (no guessing subpages that don't exist).
  *
  * @param {string} url
+ * @param {(html: string) => boolean} [verifyHtml]  optional page-content check —
+ *   e.g. confirm the business's own name shows up before trusting an email
+ *   found on it. Only used for the web-search path, where the URL itself is
+ *   an unverified guess; a known website/social_url from our own data
+ *   doesn't need this.
  * @returns {Promise<string|null>}
  */
-async function scrapeEmailFromUrl(url) {
+async function scrapeEmailFromUrl(url, verifyHtml) {
   if (!url) return null;
 
   let base;
@@ -76,6 +94,7 @@ async function scrapeEmailFromUrl(url) {
 
   for (const pageUrl of pagesToTry) {
     const html = await fetchPage(pageUrl);
+    if (verifyHtml && !verifyHtml(html)) continue;
     const emails = extractEmails(html);
     if (emails.length) {
       logger.debug('websiteEmailScraper: found email', { pageUrl, email: emails[0] });
@@ -84,6 +103,37 @@ async function scrapeEmailFromUrl(url) {
   }
 
   return null;
+}
+
+// Words too generic to prove a page belongs to a specific business (nearly
+// every local-business page contains some of these).
+const GENERIC_NAME_WORDS = new Set([
+  'the', 'and', 'inc', 'llc', 'corp', 'co', 'spa', 'salon', 'center', 'centre',
+  'clinic', 'studio', 'medical', 'wellness', 'health', 'healthcare', 'massage',
+  'nails', 'nail', 'beauty', 'shop', 'shoppe', 'group', 'associates',
+  'services', 'service', 'of', 'for', 'at', 'new', 'york', 'nyc',
+]);
+
+function distinctiveNameWords(name) {
+  return (name || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !GENERIC_NAME_WORDS.has(w));
+}
+
+/**
+ * Loose sanity check that a scraped page is actually about this business —
+ * catches a search result that ranked for the query but is really some
+ * unrelated organization's page. If the name is entirely generic words
+ * (nothing distinctive to check), this can't verify anything either way, so
+ * it doesn't block — it's a best-effort filter, not a guarantee.
+ */
+function pageMatchesBusiness(html, name) {
+  const words = distinctiveNameWords(name);
+  if (!words.length) return true;
+  const lower = (html || '').toLowerCase();
+  return words.some((w) => lower.includes(w));
 }
 
 // ─── Web search fallback (no website/social_url on file at all) ──────────────
@@ -177,8 +227,10 @@ async function searchWebForEmail(name, city) {
   const urls = (await searchViaSerper(query)) ?? (await searchViaDuckDuckGo(query));
   if (!urls) return null;
 
+  const verify = (html) => pageMatchesBusiness(html, name);
+
   for (const url of urls.slice(0, MAX_RESULTS_TO_TRY)) {
-    const email = await scrapeEmailFromUrl(url);
+    const email = await scrapeEmailFromUrl(url, verify);
     if (email) {
       logger.debug('websiteEmailScraper: found via web search', { name, city, url, email });
       return email;

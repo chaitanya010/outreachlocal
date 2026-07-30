@@ -12,9 +12,11 @@
  * relying on the search term alone to avoid it.
  */
 
-// TLDs that only belong to government, military, or institutional bodies —
-// never a real local small business's contact address.
-const INSTITUTIONAL_TLDS = new Set(['gov', 'mil']);
+// TLDs that only belong to government, military, or educational institutions —
+// never a real local small business's contact address. Caught a live example:
+// "Medical Testing Center" resolved to a .edu address that was actually a
+// college's Title IX/ADA compliance office, not the business.
+const INSTITUTIONAL_TLDS = new Set(['gov', 'mil', 'edu']);
 
 // Words that show up in government/institutional/nonprofit-advocacy org
 // names but essentially never in a local small business's name — e.g. a

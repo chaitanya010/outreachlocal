@@ -20,6 +20,7 @@ const {
   countNewLeadEmailsSentToday,
   getLastEmailSendTime,
   getEmailSequenceStats,
+  getEmailPerformanceStats,
 } = require('../db/leadsRepository');
 const { generateEmail } = require('./aiMessageService');
 const { sendEmail } = require('./emailService');
@@ -41,7 +42,9 @@ async function sendStage(lead, stage) {
   const result = await sendEmail({
     to: lead.email,
     replyTo: process.env.SES_FROM_EMAIL,
-    ...content,
+    subject: content.subject,
+    text: content.text,
+    headers: content.headers,
   });
 
   await recordEmailStageSent(lead.place_id, stage);
@@ -53,6 +56,8 @@ async function sendStage(lead, stage) {
     message: content.subject,
     provider_id: result.messageId,
     stage,
+    subjectVariant: content.subjectVariant,
+    painPoint: content.painPoint,
   });
 
   logger.info('Email sequence: stage sent', { place_id: lead.place_id, stage, messageId: result.messageId });
@@ -128,4 +133,5 @@ module.exports = {
   markReplied,
   markStopped,
   getEmailSequenceStats,
+  getEmailPerformanceStats,
 };

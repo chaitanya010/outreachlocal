@@ -113,8 +113,10 @@ async function markOutreachSent(placeId, logs) {
  * @param {string} [entry.message]
  * @param {string} [entry.error]
  * @param {string} [entry.provider_id]
+ * @param {number} [entry.subjectVariant]  index (0-4) of the AI subject variant sent (email only)
+ * @param {string} [entry.painPoint]       problem key cited as the observation (email only)
  */
-async function logOutreach({ leadId, placeId, channel, status, message, error, provider_id, stage }) {
+async function logOutreach({ leadId, placeId, channel, status, message, error, provider_id, stage, subjectVariant, painPoint }) {
   const db = getClient();
   const { error: dbErr } = await db.from(LOGS_TABLE).insert({
     lead_id: leadId,
@@ -125,6 +127,8 @@ async function logOutreach({ leadId, placeId, channel, status, message, error, p
     error: error || null,
     provider_id: provider_id || null,
     stage: stage || null,
+    subject_variant: subjectVariant === undefined || subjectVariant === -1 ? null : subjectVariant,
+    pain_point: painPoint || null,
   });
 
   if (dbErr) {
@@ -410,6 +414,61 @@ async function getEmailSequenceStats() {
   return { ...stageCounts, sentToday };
 }
 
+/**
+ * Reply-rate breakdown by subject-line variant, pain-point angle, and stage —
+ * the actual data points behind "who replied and what worked" instead of
+ * guessing. Caveat: a reply is attributed to every stage/variant/pain-point
+ * sent to that lead (we don't know which specific email triggered a reply,
+ * only that the lead replied at some point in their sequence) — treat this
+ * as an engagement proxy across a lead's whole thread, not per-message
+ * attribution. Still useful once volume builds up: a variant/angle that's
+ * consistently present in replied threads and rare in dead ones is a signal.
+ */
+async function getEmailPerformanceStats() {
+  const db = getClient();
+  const [{ data: logs, error: logsErr }, { data: leads, error: leadsErr }] = await Promise.all([
+    db.from(LOGS_TABLE).select('place_id, stage, subject_variant, pain_point').eq('channel', 'email').not('stage', 'is', null),
+    db.from(TABLE).select('place_id, email_replied'),
+  ]);
+  if (logsErr) {
+    logger.error('getEmailPerformanceStats logs query failed', { message: logsErr.message });
+    throw logsErr;
+  }
+  if (leadsErr) {
+    logger.error('getEmailPerformanceStats leads query failed', { message: leadsErr.message });
+    throw leadsErr;
+  }
+
+  const repliedSet = new Set((leads || []).filter((l) => l.email_replied).map((l) => l.place_id));
+
+  const bySubjectVariant = {};
+  const byPainPoint = {};
+  const byStage = {};
+  const bump = (bucket, key, replied) => {
+    bucket[key] = bucket[key] || { sent: 0, replied: 0 };
+    bucket[key].sent++;
+    if (replied) bucket[key].replied++;
+  };
+
+  for (const log of logs || []) {
+    const replied = repliedSet.has(log.place_id);
+    if (log.subject_variant !== null && log.subject_variant !== undefined) bump(bySubjectVariant, log.subject_variant, replied);
+    if (log.pain_point) bump(byPainPoint, log.pain_point, replied);
+    if (log.stage) bump(byStage, log.stage, replied);
+  }
+
+  const withRate = (bucket) =>
+    Object.fromEntries(
+      Object.entries(bucket).map(([k, v]) => [k, { ...v, replyRate: v.sent ? +((v.replied / v.sent) * 100).toFixed(1) : 0 }])
+    );
+
+  return {
+    bySubjectVariant: withRate(bySubjectVariant),
+    byPainPoint: withRate(byPainPoint),
+    byStage: withRate(byStage),
+  };
+}
+
 // ─── Discovery pipeline: niche/geo rotation history ───────────────────────────
 
 const SEARCH_HISTORY_TABLE = 'search_history';
@@ -483,6 +542,7 @@ module.exports = {
   countNewLeadEmailsSentToday,
   getLastEmailSendTime,
   getEmailSequenceStats,
+  getEmailPerformanceStats,
   getRecentSearchHistory,
   recordSearchHistory,
   getExistingLeadIdentifiers,

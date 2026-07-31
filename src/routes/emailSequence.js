@@ -98,6 +98,22 @@ router.get('/outreach/email/stats', async (req, res) => {
   }
 });
 
+// ─── GET /outreach/email/performance ────────────────────────────────────────────
+/**
+ * Reply-rate breakdown by subject-line variant, pain-point angle, and stage —
+ * the concrete "what's actually working" data behind the ongoing copy
+ * experiments (see aiMessageService's STAGE_ANGLES / pickPainPoint).
+ */
+router.get('/outreach/email/performance', async (req, res) => {
+  if (!isAdmin(req)) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const performance = await emailSequence.getEmailPerformanceStats();
+    return res.json({ ok: true, performance });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── GET /unsubscribe ──────────────────────────────────────────────────────────
 /**
  * Public. ?e=<email>&t=<hmac token from unsubscribe.js>

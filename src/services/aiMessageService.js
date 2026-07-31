@@ -5,6 +5,7 @@ const logger = require('../utils/logger');
 const { unsubHeaders } = require('../utils/unsubscribe');
 const { buildSignature } = require('../utils/signature');
 const { getColdCallContext } = require('./prospectScorer');
+const { ALL_PROBLEM_DESCRIPTIONS } = require('./leadScorer');
 
 let client = null;
 
@@ -171,45 +172,88 @@ function offerForLead(lead) {
 // every earlier version into Promotions.
 
 // stage: 1=intro (day 0), 2=value (day 3), 3=free redesign offer (day 7), 4=last touch (day 14)
+//
+// Each stage uses a distinct persuasion structure (Follow-Up Ladder / Multi-Angle
+// Follow-Up strategy) so a lead who doesn't reply to stage 1 sees a genuinely
+// different angle each time, not the same ask reworded. All four stay inside the
+// same hard constraint proven to land in the Inbox: no company name, no service
+// list, no links, one CTA. "Selling" happens through structure and specificity,
+// not through richer content.
 const STAGE_ANGLES = {
-  1: () =>
+  1: (offer) =>
     `This is the FIRST email -- reach out directly and personally, like you're writing to
 one specific business owner you looked into, not sending a pitch. Do not introduce a
-company or explain what you do.`,
+company or explain what you do. Structure it invisibly as Problem -> brief Agitate ->
+soft ask: state the one real observation below like you actually noticed it, briefly
+note why it likely costs them (a missed call, a no-show, a lost booking -- pick
+whichever fits), then ask permission for a short conversation rather than assuming
+they want one. (Internal angle hint, don't name it: ${offer})`,
   2: (offer) =>
-    `This is a brief FOLLOW-UP (their 2nd email, no reply yet). Keep the same personal,
-non-pitchy tone -- something like "wanted to follow up on my last note." You can hint
-at the underlying angle (${offer}) in your own words, but don't name it as a product or
-service. Still end with a request for a short conversation.`,
+    `This is a brief FOLLOW-UP (their 2nd email, no reply yet). Different angle from the
+first email: ask a genuine, curious QUESTION about the observation below instead of
+restating it as a fact -- like you're checking whether it's actually a pain point for
+them, not assuming. Keep it short and conversational, non-pitchy. Still end with the
+same soft ask for a short conversation. (Internal angle hint, don't name it: ${offer})`,
   3: (offer) =>
-    `This is a brief FOLLOW-UP (their 3rd email, no reply yet). Make it low-effort to say
-yes -- offer to just share a couple of specific ideas for their business (related to:
-${offer}) if they're open to it, still in plain conversational language, not as a
-named offer/product.`,
+    `This is a brief FOLLOW-UP (their 3rd email, no reply yet). Use a quick Before/After
+contrast in plain language -- where things likely stand now vs. what it'd look like if
+that one thing below were handled -- then make it low-effort to say yes: offer to just
+share a couple of specific ideas for their business if they're open to it, not as a
+named offer/product. (Internal angle hint, don't name it: ${offer})`,
   4: () =>
     `This is the LAST email (their 4th, no reply yet) -- a brief, polite breakup note.
-Acknowledge this is the last note on this, leave the door open, no pressure, thank them
-for their time.`,
+Make it genuinely low-pressure and okay for them to say nothing (it's fine if the
+timing's just not right), acknowledge this is the last note on this, leave the door
+open, thank them for their time.`,
 };
+
+function stringHash(key) {
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  return hash;
+}
 
 /** Deterministic pick from a list, keyed by a string — same lead+stage always
  * gets the same subject variant (reproducible), but spreads across variants
  * as leads/stages vary, giving future analysis something to segment on. */
 function pickVariant(key, list) {
   if (!list || !list.length) return null;
-  let hash = 0;
-  for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
-  return list[hash % list.length];
+  return list[stringHash(key) % list.length];
+}
+
+/** Same deterministic pick, but returns the index (for logging which variant
+ * was sent, so reply rate can later be broken down per variant). */
+function pickVariantIndex(key, length) {
+  if (!length) return -1;
+  return stringHash(key) % length;
+}
+
+/**
+ * One Pain Per Email: deterministically pick a single problem key from the
+ * lead's measured `problems` (prospectScorer/leadScorer), rotating which one
+ * gets cited as stage advances so a 4-email sequence to the same lead surfaces
+ * a different specific angle each time instead of repeating the same pain.
+ */
+function pickPainPoint(lead, stage) {
+  const problems = lead.problems || [];
+  if (!problems.length) return null;
+  const idx = (stringHash(String(lead.place_id || lead.name)) + stage) % problems.length;
+  return problems[idx];
 }
 
 /**
  * The one genuine, fact-grounded observation to personalize with — pulled
  * from measured signals only (prospectScorer/leadScorer problems, or the
  * discovery pipeline's precomputed personalization_sentence), never invented.
+ * Stage 1 prefers the discovery pipeline's pre-built sentence (already the
+ * single best fact); every stage falls back to one specific rotated pain
+ * point instead of the same generic summary, per Pain Point Selling /
+ * One Pain Per Email.
  */
-function factualObservation(lead) {
-  if (lead.personalization_sentence) return lead.personalization_sentence;
-  return getColdCallContext(lead);
+function factualObservation(lead, stage, painKey) {
+  if (stage === 1 && lead.personalization_sentence) return lead.personalization_sentence;
+  if (painKey && ALL_PROBLEM_DESCRIPTIONS[painKey]) return ALL_PROBLEM_DESCRIPTIONS[painKey];
+  return lead.personalization_sentence || getColdCallContext(lead);
 }
 
 function greetingName(lead) {
@@ -227,7 +271,8 @@ function greetingName(lead) {
  */
 async function generateEmail(lead, stage = 1) {
   const offer = offerForLead(lead);
-  const observation = factualObservation(lead);
+  const painKey = pickPainPoint(lead, stage);
+  const observation = factualObservation(lead, stage, painKey);
   const firstName = greetingName(lead);
   const angle = (STAGE_ANGLES[stage] || STAGE_ANGLES[1])(offer);
 
@@ -244,9 +289,11 @@ Return JSON with exactly two fields:
 Just the JSON object, nothing else.`;
 
   const headers = lead.email ? unsubHeaders(lead.email) : undefined;
+  const variantKey = `${lead.place_id || lead.name}-${stage}`;
 
   let subject;
   let body;
+  let subjectVariant = -1;
 
   try {
     const res = await getClient().chat.completions.create({
@@ -261,12 +308,14 @@ Just the JSON object, nothing else.`;
     });
 
     const parsed = JSON.parse(res.choices[0].message.content);
-    subject = pickVariant(`${lead.place_id || lead.name}-${stage}`, parsed.subjects) || parsed.subjects?.[0];
+    subjectVariant = pickVariantIndex(variantKey, parsed.subjects?.length || 0);
+    subject = (subjectVariant >= 0 && parsed.subjects[subjectVariant]) || parsed.subjects?.[0];
     body = parsed.body;
     if (!subject || !body) throw new Error('AI response missing subject/body');
   } catch (err) {
     logger.error('AI email generation failed, using fallback', { message: err.message, stage });
     subject = 'quick question';
+    subjectVariant = -1; // fallback path, not one of the 5 AI variants
     body = `Hi${firstName ? ` ${firstName}` : ''},\n\nI came across ${lead.name} and noticed ${observation || 'you don\'t have a website yet'}. Wanted to reach out directly rather than send a generic pitch.\n\nWould you have 15 minutes this week to talk?`;
   }
 
@@ -277,7 +326,7 @@ Just the JSON object, nothing else.`;
   // email with no HTML part at all landed in the Inbox. buildHtml() is kept
   // for reference/re-testing later, just not used in the default send path.
   const text = assembleEmailText(body);
-  return { subject, text, headers };
+  return { subject, text, headers, subjectVariant, painPoint: painKey || null };
 }
 
 /**

@@ -40,6 +40,12 @@ const PHONE_NUMBER = process.env.SENDER_PHONE || '';
 const INCLUDE_BRAND = process.env.SIGNATURE_INCLUDE_BRAND === 'true';
 const INCLUDE_CONTACT = process.env.SIGNATURE_INCLUDE_CONTACT === 'true';
 const INCLUDE_CALENDLY = process.env.SIGNATURE_INCLUDE_CALENDLY === 'true';
+// Separate, lighter-weight experiment from INCLUDE_BRAND above: just a single
+// plain-text "🌐 stanweb.tech" line under the first name, not the full
+// name/title/contact block. Untested against the proven name-only default --
+// verify via a real sample send (check Inbox vs Promotions) before relying
+// on it for real leads.
+const INCLUDE_EMOJI_BRAND_LINE = process.env.SIGNATURE_INCLUDE_EMOJI_BRAND_LINE === 'true';
 
 // Accepts either a raw number or a wa.me/https://wa.me/<number> link and
 // always displays just the plain digits, so it never renders as a clickable
@@ -50,8 +56,14 @@ function whatsappDisplayNumber(raw) {
   return match ? match[1].trim() : raw;
 }
 
-function buildSignature() {
-  if (!INCLUDE_BRAND) return FIRST_NAME;
+/**
+ * @param {string} [firstNameOverride]  per-mailbox sender first name, for the
+ *                                      multi-sender rotation -- so the sign-off
+ *                                      matches whichever mailbox actually sent it.
+ */
+function buildSignature(firstNameOverride) {
+  const first = firstNameOverride || FIRST_NAME;
+  if (!INCLUDE_BRAND) return INCLUDE_EMOJI_BRAND_LINE ? `${first}\n🌐 stanweb.tech` : first;
 
   const lines = [FULL_NAME, TITLE, BRAND_LINE];
   if (INCLUDE_CALENDLY && CALENDLY_URL) lines.push('', `Schedule a meeting with me: ${CALENDLY_URL}`);

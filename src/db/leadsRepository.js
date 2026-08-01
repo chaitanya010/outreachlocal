@@ -115,8 +115,9 @@ async function markOutreachSent(placeId, logs) {
  * @param {string} [entry.provider_id]
  * @param {number} [entry.subjectVariant]  index (0-4) of the AI subject variant sent (email only)
  * @param {string} [entry.painPoint]       problem key cited as the observation (email only)
+ * @param {string} [entry.sender]          which mailbox sent this (email only, sender rotation)
  */
-async function logOutreach({ leadId, placeId, channel, status, message, error, provider_id, stage, subjectVariant, painPoint }) {
+async function logOutreach({ leadId, placeId, channel, status, message, error, provider_id, stage, subjectVariant, painPoint, sender }) {
   const db = getClient();
   const { error: dbErr } = await db.from(LOGS_TABLE).insert({
     lead_id: leadId,
@@ -129,6 +130,7 @@ async function logOutreach({ leadId, placeId, channel, status, message, error, p
     stage: stage || null,
     subject_variant: subjectVariant === undefined || subjectVariant === -1 ? null : subjectVariant,
     pain_point: painPoint || null,
+    sender: sender || null,
   });
 
   if (dbErr) {
@@ -231,7 +233,10 @@ async function updateWebPresence(placeId, fields) {
  * in emailSequence.js) so the "is this lead due" filter can be expressed as a
  * single SQL query instead of pulling every lead into JS to check.
  */
-const STAGE_OFFSET_DAYS = { 2: 3, 3: 7, 4: 14 };
+// Stage 2 (the decoy resend) fires after 2 days rather than 3 -- the decoy
+// is meant to get a fast reply, so a shorter gap makes sense than the
+// original pain-point follow-up cadence.
+const STAGE_OFFSET_DAYS = { 2: 2, 3: 7, 4: 14 };
 
 /**
  * Find leads due for their next email-sequence stage: never contacted
@@ -312,6 +317,93 @@ async function setEmailFlag(placeId, flag) {
 }
 
 /**
+ * Leads currently sitting in the decoy stage (1 or 2), not yet replied, not
+ * stopped -- the pool replyWatcher.js checks incoming mail against. Scoped
+ * to has_website=false and email_stopped/replied=false like the rest of the
+ * sequence; NOT scoped to a single sender since the watcher already knows
+ * which mailbox it's polling and passes that in separately.
+ */
+async function getDecoyStageLeadsBySenderAndEmail(sender, email) {
+  const db = getClient();
+  const { data, error } = await db
+    .from(TABLE)
+    .select('*')
+    .eq('assigned_sender', sender)
+    .eq('email', email)
+    .eq('email_replied', false)
+    .eq('email_stopped', false)
+    .lte('email_stage', 2)
+    .limit(1);
+
+  if (error) {
+    logger.error('getDecoyStageLeadsBySenderAndEmail failed', { sender, email, message: error.message });
+    throw error;
+  }
+  return data && data.length ? data[0] : null;
+}
+
+/**
+ * The Message-ID SES returned for a lead's most recent decoy send (stage 1
+ * or 2) -- used to thread the pivot reply (In-Reply-To/References) so it
+ * shows up in the same conversation instead of as a new, disconnected email.
+ */
+async function getLastDecoyMessageId(placeId) {
+  const db = getClient();
+  const { data, error } = await db
+    .from(LOGS_TABLE)
+    .select('provider_id')
+    .eq('place_id', placeId)
+    .eq('channel', 'email')
+    .lte('stage', 2)
+    .order('created_at', { ascending: false })
+    .limit(1);
+
+  if (error) {
+    logger.error('getLastDecoyMessageId failed', { placeId, message: error.message });
+    throw error;
+  }
+  return data && data.length ? data[0].provider_id : null;
+}
+
+/**
+ * Marks the reply-triggered pivot/reveal email as sent for a lead, so a
+ * second/third reply from the same lead doesn't trigger it again.
+ */
+async function markPivotSent(placeId) {
+  const db = getClient();
+  const { error } = await db
+    .from(TABLE)
+    .update({ email_pivot_sent: true, last_reply_at: new Date().toISOString() })
+    .eq('place_id', placeId);
+  if (error) {
+    logger.error('markPivotSent failed', { placeId, message: error.message });
+    throw error;
+  }
+}
+
+/**
+ * Whether we've already processed a given inbound reply (by its Message-ID
+ * header) -- dedup guard for replyWatcher.js so re-polling the same mailbox
+ * never double-processes a reply. Deliberately does NOT rely on IMAP \Seen
+ * flags, since these are real mailboxes someone may also check manually --
+ * marking messages read as a side effect of polling would be surprising.
+ */
+async function hasProcessedInboundMessage(messageId) {
+  const db = getClient();
+  const { data, error } = await db
+    .from(LOGS_TABLE)
+    .select('id')
+    .eq('channel', 'email_reply')
+    .eq('provider_id', messageId)
+    .limit(1);
+  if (error) {
+    logger.error('hasProcessedInboundMessage failed', { messageId, message: error.message });
+    throw error;
+  }
+  return !!(data && data.length);
+}
+
+/**
  * Set email_stopped=true for every lead sharing the given email address
  * (used by the public /unsubscribe endpoint).
  */
@@ -323,6 +415,35 @@ async function stopEmailByAddress(email) {
     throw error;
   }
   return true;
+}
+
+/**
+ * Permanently suppress an address after an SES hard bounce or spam
+ * complaint (see routes/sesWebhook.js) -- stops the sequence the same way
+ * /unsubscribe does, plus logs one outreach_logs row per affected lead so
+ * the reason is auditable.
+ */
+async function suppressEmailAddress(email, reason) {
+  const db = getClient();
+  const { data: leads, error: findErr } = await db.from(TABLE).select('id, place_id').eq('email', email);
+  if (findErr) {
+    logger.error('suppressEmailAddress lookup failed', { email, message: findErr.message });
+    throw findErr;
+  }
+
+  await stopEmailByAddress(email);
+
+  for (const lead of leads || []) {
+    await logOutreach({
+      leadId: lead.id,
+      placeId: lead.place_id,
+      channel: 'email',
+      status: reason,
+      message: `Suppressed: ${reason}`,
+    });
+  }
+
+  return { suppressed: (leads || []).length };
 }
 
 /**
@@ -415,6 +536,76 @@ async function getEmailSequenceStats() {
 }
 
 /**
+ * Today's stage-1 (new-lead) send counts grouped by sender mailbox, for the
+ * sender-rotation load balancer to pick the least-loaded mailbox that hasn't
+ * hit its per-sender daily cap.
+ */
+async function getSenderNewLeadCountsToday() {
+  const db = getClient();
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+
+  const { data, error } = await db
+    .from(LOGS_TABLE)
+    .select('sender')
+    .eq('channel', 'email')
+    .eq('stage', 1)
+    .not('sender', 'is', null)
+    .gte('created_at', startOfDay.toISOString());
+
+  if (error) {
+    logger.error('getSenderNewLeadCountsToday failed', { message: error.message });
+    throw error;
+  }
+
+  const counts = {};
+  for (const row of data || []) counts[row.sender] = (counts[row.sender] || 0) + 1;
+  return counts;
+}
+
+/**
+ * Earliest stage-1 send date per sender mailbox — the anchor for the sender
+ * warm-up ramp (a brand-new mailbox starts at a conservative daily cap that
+ * increases the longer it's been sending, rather than jumping straight to
+ * the full per-sender cap on day one).
+ */
+async function getSenderFirstSendDates() {
+  const db = getClient();
+  const { data, error } = await db
+    .from(LOGS_TABLE)
+    .select('sender, created_at')
+    .eq('channel', 'email')
+    .eq('stage', 1)
+    .not('sender', 'is', null)
+    .order('created_at', { ascending: true });
+
+  if (error) {
+    logger.error('getSenderFirstSendDates failed', { message: error.message });
+    throw error;
+  }
+
+  const firstSend = {};
+  for (const row of data || []) {
+    if (!firstSend[row.sender]) firstSend[row.sender] = row.created_at; // ascending order -> first occurrence is earliest
+  }
+  return firstSend;
+}
+
+/**
+ * Lock a lead to the mailbox that sent its stage-1 email, so every follow-up
+ * in its sequence comes from the same address (reply continuity, and the
+ * thing that guarantees no lead is ever double-contacted by two mailboxes).
+ */
+async function setAssignedSender(placeId, sender) {
+  const db = getClient();
+  const { error } = await db.from(TABLE).update({ assigned_sender: sender }).eq('place_id', placeId);
+  if (error) {
+    logger.error('setAssignedSender failed', { placeId, message: error.message });
+    throw error;
+  }
+}
+
+/**
  * Reply-rate breakdown by subject-line variant, pain-point angle, and stage —
  * the actual data points behind "who replied and what worked" instead of
  * guessing. Caveat: a reply is attributed to every stage/variant/pain-point
@@ -427,7 +618,7 @@ async function getEmailSequenceStats() {
 async function getEmailPerformanceStats() {
   const db = getClient();
   const [{ data: logs, error: logsErr }, { data: leads, error: leadsErr }] = await Promise.all([
-    db.from(LOGS_TABLE).select('place_id, stage, subject_variant, pain_point').eq('channel', 'email').not('stage', 'is', null),
+    db.from(LOGS_TABLE).select('place_id, stage, subject_variant, pain_point, sender').eq('channel', 'email').not('stage', 'is', null),
     db.from(TABLE).select('place_id, email_replied'),
   ]);
   if (logsErr) {
@@ -444,6 +635,7 @@ async function getEmailPerformanceStats() {
   const bySubjectVariant = {};
   const byPainPoint = {};
   const byStage = {};
+  const bySender = {};
   const bump = (bucket, key, replied) => {
     bucket[key] = bucket[key] || { sent: 0, replied: 0 };
     bucket[key].sent++;
@@ -455,6 +647,7 @@ async function getEmailPerformanceStats() {
     if (log.subject_variant !== null && log.subject_variant !== undefined) bump(bySubjectVariant, log.subject_variant, replied);
     if (log.pain_point) bump(byPainPoint, log.pain_point, replied);
     if (log.stage) bump(byStage, log.stage, replied);
+    if (log.sender) bump(bySender, log.sender, replied);
   }
 
   const withRate = (bucket) =>
@@ -466,6 +659,7 @@ async function getEmailPerformanceStats() {
     bySubjectVariant: withRate(bySubjectVariant),
     byPainPoint: withRate(byPainPoint),
     byStage: withRate(byStage),
+    bySender: withRate(bySender),
   };
 }
 
@@ -531,6 +725,7 @@ module.exports = {
   markOutreachSent,
   logOutreach,
   getOutreachLogs,
+  suppressEmailAddress,
   getLeadsMissingEmail,
   getLeadsMissingWebPresence,
   updateWebPresence,
@@ -543,6 +738,13 @@ module.exports = {
   getLastEmailSendTime,
   getEmailSequenceStats,
   getEmailPerformanceStats,
+  getSenderNewLeadCountsToday,
+  getSenderFirstSendDates,
+  setAssignedSender,
+  getDecoyStageLeadsBySenderAndEmail,
+  getLastDecoyMessageId,
+  markPivotSent,
+  hasProcessedInboundMessage,
   getRecentSearchHistory,
   recordSearchHistory,
   getExistingLeadIdentifiers,

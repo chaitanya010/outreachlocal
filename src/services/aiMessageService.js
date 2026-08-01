@@ -107,32 +107,43 @@ Just the message text, nothing else.`;
 // checking inbox vs Promotions) established that a company self-intro
 // ("At StanWeb, we...") or naming a PRODUCT/service ("AI voice calling", "AI
 // receptionist") reliably reads as marketing language and lands in
-// Promotions -- so this missed-calls/competitor-urgency angle deliberately
-// describes the CAPABILITY in plain human language instead of naming the
-// thing: "something that picks up" / "answers automatically" rather than
-// "AI voice calling system". Same words a business owner would use
-// describing it to a friend, not a product name. Still no company/brand
-// name, no links, no bullet lists, no HTML.
+// Promotions -- so this describes the CAPABILITY in plain human language
+// instead of naming the thing: "something that picks up" / "answers
+// automatically" rather than "AI voice calling system". Earlier version of
+// this prompt also claimed "other businesses already have this" as an
+// urgency lever -- dropped: that's an unverifiable competitor claim (a real
+// deceptive-advertising risk, not just a deliverability one), replaced with
+// a possibility-framed outcome estimate instead, per direct instruction.
 const EMAIL_SYSTEM_PROMPT = `You write short, direct cold outreach emails on behalf of Chaitanya, who helps local
-businesses (salons, spas, clinics, med spas, home services, and similar) stop losing
-customers to missed calls -- including after-hours calls and two calls at once.
+businesses stop losing customers to missed calls -- including after-hours calls and two
+calls at once.
 
 Rules -- follow all of these exactly:
 - Write like a real 1:1 email from one person to another business owner, not a company
   pitch. Do not name the company ("StanWeb"), do not use product/feature names like
   "AI voice calling", "AI receptionist", "system", "software", "solution", or "platform"
-  -- describe what happens in plain human words instead (e.g. "something that picks up
-  every call, even after hours, even if two people call at once, and books them right
-  then") never the name of the thing.
-- Structure: (1) a short, genuine question about how they currently handle calls, (2)
-  one honest sentence naming the real cost of a missed call (a lost booking/customer --
-  no invented numbers or fake statistics), (3) one sentence of real urgency, described
-  in plain terms (other businesses like theirs already have something that answers
-  every call and books appointments on the spot, day or night), (4) end asking them to
-  reply to set it up.
-- 50-90 words total, short sentences/paragraphs. Plain text only, no HTML, no emojis, no
+  -- describe what happens in plain human words instead (e.g. "something that only steps
+  in when a call would otherwise go unanswered -- after hours, or if you're already on
+  another line -- and sounds enough like a real person that most callers can't tell the
+  difference") never the name of the thing.
+- Two specific facts to weave in naturally (not as a checklist, not both forced into
+  every email -- pick whichever fits the sentence): (a) it ONLY picks up calls that would
+  otherwise be missed -- unanswered or after hours -- it doesn't replace anyone picking up
+  normally; (b) the voice sounds like a real person, genuinely hard to tell apart from a
+  human answering.
+- Structure: (1) a short, genuine QUESTION about what happens when someone calls during
+  a specific moment (busy, after hours, etc) -- an actual question, not a claim, (2) one
+  plain-language sentence describing what happens instead, working in one of the two
+  facts above, (3) one sentence framing a POSSIBLE outcome using the specific number and
+  outcome word given to you below, worded as a possibility ("could mean", "might add up
+  to") -- never a guarantee, and never a claim about competitors or results already
+  produced for them, (4) end asking if it's worth hearing what it would sound like for
+  their business.
+- Never invent facts, results, or competitor claims -- only use the specific detail
+  given to you below, and only if it fits naturally.
+- 50-80 words total, short sentences/paragraphs. Plain text only, no HTML, no emojis, no
   bold, no bullet lists, no ALL CAPS, no fake urgency words like "act now" or "limited
-  time" -- the urgency should come from the competitor framing, not hype language.
+  time".
 - Do not include a signature or sign-off -- that's added separately.
 - Do not include any links in the body text.`;
 
@@ -168,7 +179,7 @@ function offerForLead(lead) {
   const match = Object.keys(INDUSTRY_OFFERS).find((k) => type.includes(k));
   return match
     ? INDUSTRY_OFFERS[match]
-    : 'answering every call automatically, even after hours or if two people call at once, and booking the appointment on the spot';
+    : 'picking up calls that would otherwise go unanswered -- missed or after hours -- with a voice that sounds real enough that callers usually can\'t tell';
 }
 
 // `offer` (from offerForLead/INDUSTRY_OFFERS) is deliberately used only as an
@@ -176,40 +187,66 @@ function offerForLead(lead) {
 // email itself -- naming specific services/tools is exactly what pushed
 // every earlier version into Promotions.
 
+// Niche-specific outcome word for the "5-10 additional {{outcome}}/month"
+// possibility framing -- dentists lose patients, salons lose bookings, gyms
+// lose members, home services lose jobs/service calls, and so on. Falls back
+// to "appointments" for anything unmapped.
+const NICHE_OUTCOMES = {
+  dental: 'patients', orthodontics: 'patients', dermatology: 'patients', 'urgent care': 'patients',
+  'physical therapy': 'patients', chiropractic: 'patients', optometrist: 'patients', 'medical imaging': 'patients',
+  veterinary: 'appointments', 'animal hospital': 'appointments',
+  spa: 'bookings', 'med spa': 'bookings', salon: 'bookings', 'nail salon': 'bookings', 'hair salon': 'bookings',
+  barbershop: 'bookings', massage: 'bookings', waxing: 'bookings', tanning: 'bookings', 'lash studio': 'bookings',
+  gym: 'members', fitness: 'members', 'martial arts': 'members', yoga: 'members', pilates: 'members',
+  hvac: 'service calls', plumbing: 'service calls', electrician: 'service calls', 'pest control': 'service calls',
+  locksmith: 'service calls', 'appliance repair': 'service calls',
+  roofing: 'jobs', landscaping: 'jobs', 'tree service': 'jobs', flooring: 'jobs', remodeler: 'jobs',
+  cleaning: 'bookings', 'carpet cleaning': 'bookings', 'window cleaning': 'bookings',
+  'law firm': 'consultations', attorney: 'consultations', 'real estate': 'appointments', mortgage: 'consultations',
+  insurance: 'consultations', cpa: 'appointments', accounting: 'appointments',
+  'daycare': 'enrollments', tutoring: 'enrollments', 'driving school': 'enrollments',
+};
+
+function outcomeForLead(lead) {
+  const type = (lead.business_type || '').toLowerCase();
+  const match = Object.keys(NICHE_OUTCOMES).find((k) => type.includes(k));
+  return match ? NICHE_OUTCOMES[match] : 'appointments';
+}
+
 // stage: 1=intro (day 0), 2=value (day 3), 3=free redesign offer (day 7), 4=last touch (day 14)
 //
 // Each stage uses a distinct persuasion structure (Follow-Up Ladder / Multi-Angle
 // Follow-Up strategy) so a lead who doesn't reply to stage 1 sees a genuinely
 // different angle each time, not the same ask reworded. All four stay inside the
 // same hard constraint proven to land in the Inbox: no company name, no service
-// list, no links, one CTA. "Selling" happens through structure and specificity,
-// not through richer content.
+// list, no links, one CTA, no fabricated competitor claims. "Selling" happens
+// through structure, specificity, and a possibility-framed (never guaranteed)
+// outcome estimate, not through richer content or unverifiable claims.
 const STAGE_ANGLES = {
-  1: (offer) =>
+  1: (offer, outcome) =>
     `This is the FIRST email -- follow the (1)(2)(3)(4) structure from the system prompt
-exactly: question about how they handle calls, cost of a missed call, plain-language
-competitor urgency, reply-to-set-it-up CTA. If the observation below fits naturally as
-the specific detail behind the question, use it; otherwise keep the question general.
-(Internal detail, only if it fits naturally, never name it as a product: ${offer})`,
-  2: (offer) =>
+exactly. The outcome word for step 3 is "${outcome}" -- frame it as a possibility, e.g.
+"could mean 5-10 additional ${outcome} a month," never a guarantee. If the observation
+below fits naturally as the specific business detail behind the question, use it;
+otherwise keep the question general to their line of work. (Internal detail, only if it
+fits naturally, never name it as a product: ${offer})`,
+  2: (offer, outcome) =>
     `This is a brief FOLLOW-UP (their 2nd email, no reply yet). Different angle from the
-first: instead of asking how they handle calls, ask directly whether missed calls
+first: instead of asking what happens on a call, ask directly whether missed calls
 during busy hours or after-hours are something that actually happens for them --
-genuinely curious, not assuming. Keep the same plain-language urgency (others in their
-line of work already have something that answers every call and books on the spot) and
-the same reply-to-set-it-up close. (Internal detail, only if it fits naturally: ${offer})`,
-  3: (offer) =>
+genuinely curious, not assuming. Still frame the possible outcome using "${outcome}" as
+a possibility, not a guarantee, and end with the same worth-hearing-more close.
+(Internal detail, only if it fits naturally: ${offer})`,
+  3: (offer, outcome) =>
     `This is a brief FOLLOW-UP (their 3rd email, no reply yet). Quick Before/After in
 plain language -- calls going unanswered now vs. every call picked up and booked
-automatically, day or night -- then make it low-effort to say yes: ask if they'd be
-open to just seeing how it'd work for their business, no pressure. (Internal detail,
-only if it fits naturally: ${offer})`,
+automatically, day or night, possibly adding up to a few more ${outcome} a month -- then
+make it low-effort to say yes: ask if they'd be open to just seeing how it'd work for
+their business, no pressure. (Internal detail, only if it fits naturally: ${offer})`,
   4: () =>
     `This is the LAST email (their 4th, no reply yet) -- a brief, polite breakup note.
-One last honest line that competitors picking up every call while they're still missing
-some is a gap that keeps widening the longer it goes unaddressed, but make it genuinely
-low-pressure and okay for them to say nothing. Thank them for their time, leave the
-door open.`,
+No urgency framing here, just an honest, low-pressure check: maybe the timing's just not
+right, totally fine either way, thank them for their time, leave the door open.`,
 };
 
 function stringHash(key) {
@@ -218,16 +255,11 @@ function stringHash(key) {
   return hash;
 }
 
-/** Deterministic pick from a list, keyed by a string — same lead+stage always
- * gets the same subject variant (reproducible), but spreads across variants
- * as leads/stages vary, giving future analysis something to segment on. */
-function pickVariant(key, list) {
-  if (!list || !list.length) return null;
-  return list[stringHash(key) % list.length];
-}
-
-/** Same deterministic pick, but returns the index (for logging which variant
- * was sent, so reply rate can later be broken down per variant). */
+/** Deterministic pick from a list, keyed by a string, returning the index —
+ * same lead+stage always gets the same subject variant (reproducible), but
+ * spreads across variants as leads/stages vary. Returning the index (rather
+ * than the value) lets the caller log which variant was sent, so reply rate
+ * can later be broken down per variant. */
 function pickVariantIndex(key, length) {
   if (!length) return -1;
   return stringHash(key) % length;
@@ -266,6 +298,50 @@ function greetingName(lead) {
   return lead.decision_maker_name.replace(/^dr\.\s*/i, '').split(/\s+/)[0];
 }
 
+// Fixed A/B subject pair for the stage-1 base email, per direct spec --
+// deterministically split (not AI-generated) so it's a controlled comparison
+// rather than 5 loosely-varied AI options.
+const STAGE1_SUBJECT_VARIANTS = ['how are calls handled?', 'quick question about calls'];
+
+// ─── Decoy opener + reply-triggered pivot ──────────────────────────────────────
+//
+// Deliberately NOT AI-generated and NOT run through the pitch system prompt
+// above -- this is meant to read as a genuine one-line question from a
+// prospective customer, not an outreach email, so a business owner replies
+// (e.g. to a "what time do you close?" message) before knowing it's outreach
+// at all. Two near-identical variants for the stage-1 (day 0) and stage-2
+// (day 2, if no reply) sends, per direct instruction. No AI call needed --
+// keeping it this minimal is the whole point.
+const DECOY_OPENERS = [
+  (lead) => `Hi, what time does ${lead.name} close today?`,
+  (lead) => `Hey — are you open right now, or what time do you close today?`,
+];
+
+function generateDecoyOpener(lead, senderFirstName, stage = 1) {
+  const body = DECOY_OPENERS[(stage - 1) % DECOY_OPENERS.length](lead);
+  const headers = lead.email ? unsubHeaders(lead.email) : undefined;
+  return { subject: 'quick question', text: assembleEmailText(body, senderFirstName), headers, subjectVariant: -1, painPoint: null };
+}
+
+/**
+ * The reveal, sent once (see email_pivot_sent) as soon as a reply to the
+ * decoy opener is detected (replyWatcher.js) -- pivots from the customer-
+ * sounding question to the actual reason for reaching out, with the deck
+ * attached (attachment is added by the caller, not here -- see
+ * emailSequence.js / replyWatcher.js). Unlike the cold-open copy above,
+ * naming what this actually is is expected and honest here: the recipient
+ * already replied, so it's a live conversation, not a cold pitch anymore.
+ */
+function generatePivotEmail(lead, senderFirstName) {
+  const body = `Ah, sorry — didn't mean to be cryptic there! I actually help businesses like ${lead.name} that are missing calls when they can't pick up, so those clients don't just go to someone else instead.
+
+Thought I'd share a quick one-pager on how it works.
+
+Would it be worth a short chat to see if it's a fit for you?`;
+  const headers = lead.email ? unsubHeaders(lead.email) : undefined;
+  return { subject: 'Re: quick question', text: assembleEmailText(body, senderFirstName), headers, subjectVariant: -1, painPoint: null };
+}
+
 /**
  * Generate a personalized email subject (one of 5 variants, deterministically
  * picked) + body for a lead at a given sequence stage (1=intro, 2=value,
@@ -273,13 +349,25 @@ function greetingName(lead) {
  * "personal letter" style, see buildHtml) and a plain-text fallback — no
  * attachments (those are handled outside this function, never automatically
  * on first contact).
+ *
+ * @param {string} [senderFirstName]  first name of whichever mailbox in the
+ *   sender rotation is sending this (see emailSequence.js) -- signs the
+ *   email so it matches the actual From address; defaults to SENDER_NAME's
+ *   first name (signature.js) if not given.
  */
-async function generateEmail(lead, stage = 1) {
+async function generateEmail(lead, stage = 1, senderFirstName) {
   const offer = offerForLead(lead);
+  const outcome = outcomeForLead(lead);
   const painKey = pickPainPoint(lead, stage);
   const observation = factualObservation(lead, stage, painKey);
   const firstName = greetingName(lead);
-  const angle = (STAGE_ANGLES[stage] || STAGE_ANGLES[1])(offer);
+  const angle = (STAGE_ANGLES[stage] || STAGE_ANGLES[1])(offer, outcome);
+  const isBaseStage = stage === 1;
+
+  const subjectInstruction = isBaseStage
+    ? '- "body": the plain text email body (50-80 words, following the (1)(2)(3)(4) structure from the system prompt, ending with the one CTA — no signature, no sign-off, no links, no company or product name)'
+    : `- "subjects": an array of exactly 5 subject line variants, each 2-4 words, plain and low-key (like "quick question" or "missed calls?"), not curiosity-bait, no ALL CAPS, no exclamation marks, and none of these words: free, guaranteed, offer, discount, urgent, act now, limited time, winner
+- "body": the plain text email body (50-80 words, following the (1)(2)(3)(4) structure from the system prompt, ending with the one CTA — no signature, no sign-off, no links, no company or product name)`;
 
   const prompt = `Write a cold outreach email to ${firstName ? firstName : 'the owner'} of ${lead.name}, a ${lead.business_type || 'local business'} in ${lead.city}.
 
@@ -287,9 +375,8 @@ ${angle}
 
 A specific detail about their business you may weave in ONLY if it fits naturally (never invent anything beyond this): ${observation || 'no specific detail available -- keep it general'}
 
-Return JSON with exactly two fields:
-- "subjects": an array of exactly 5 subject line variants, each 2-4 words, plain and low-key (like "quick question" or "missed calls?"), not curiosity-bait, no ALL CAPS, no exclamation marks, and none of these words: free, guaranteed, offer, discount, urgent, act now, limited time, winner
-- "body": the plain text email body (50-90 words, following the (1)(2)(3)(4) structure from the system prompt, ending with the one CTA — no signature, no sign-off, no links, no company or product name)
+Return JSON with exactly ${isBaseStage ? 'one field' : 'two fields'}:
+${subjectInstruction}
 
 Just the JSON object, nothing else.`;
 
@@ -313,15 +400,22 @@ Just the JSON object, nothing else.`;
     });
 
     const parsed = JSON.parse(res.choices[0].message.content);
-    subjectVariant = pickVariantIndex(variantKey, parsed.subjects?.length || 0);
-    subject = (subjectVariant >= 0 && parsed.subjects[subjectVariant]) || parsed.subjects?.[0];
     body = parsed.body;
+
+    if (isBaseStage) {
+      // Fixed A/B pair, not AI-generated -- controlled comparison per spec.
+      subjectVariant = pickVariantIndex(variantKey, STAGE1_SUBJECT_VARIANTS.length);
+      subject = STAGE1_SUBJECT_VARIANTS[subjectVariant];
+    } else {
+      subjectVariant = pickVariantIndex(variantKey, parsed.subjects?.length || 0);
+      subject = (subjectVariant >= 0 && parsed.subjects[subjectVariant]) || parsed.subjects?.[0];
+    }
     if (!subject || !body) throw new Error('AI response missing subject/body');
   } catch (err) {
     logger.error('AI email generation failed, using fallback', { message: err.message, stage });
-    subject = 'quick question';
-    subjectVariant = -1; // fallback path, not one of the 5 AI variants
-    body = `Hi${firstName ? ` ${firstName}` : ''}, how are you currently handling calls at ${lead.name}? A missed call during a busy stretch or after hours usually means that customer just calls the next place instead.\n\nA lot of businesses like yours now have something that picks up every call automatically, even two at once, and books the appointment on the spot.\n\nWorth a quick reply if you'd want to see how it'd work for you?`;
+    subjectVariant = isBaseStage ? pickVariantIndex(variantKey, STAGE1_SUBJECT_VARIANTS.length) : -1;
+    subject = isBaseStage ? STAGE1_SUBJECT_VARIANTS[subjectVariant] : 'quick question';
+    body = `Hi${firstName ? ` ${firstName}` : ''}, what happens when someone calls ${lead.name} while you're mid-appointment or after hours? A missed call there can mean a lost booking.\n\nSome businesses like yours now have something that only steps in for those missed or after-hours calls -- and sounds real enough that most callers can't tell -- booking it on the spot instead. Could add up to a handful more ${outcome} a month.\n\nWorth hearing what it'd sound like for your business?`;
   }
 
   // Plain text only, no html field -- live testing showed even the
@@ -330,7 +424,7 @@ Just the JSON object, nothing else.`;
   // domain's current sending reputation, while a completely bare plain-text
   // email with no HTML part at all landed in the Inbox. buildHtml() is kept
   // for reference/re-testing later, just not used in the default send path.
-  const text = assembleEmailText(body);
+  const text = assembleEmailText(body, senderFirstName);
   return { subject, text, headers, subjectVariant, painPoint: painKey || null };
 }
 
@@ -343,8 +437,8 @@ Just the JSON object, nothing else.`;
  * Gmail's native one-click unsubscribe UI next to the sender name), which
  * is invisible in the body and doesn't carry the same signal.
  */
-function assembleEmailText(body) {
-  return [body.trim(), '', buildSignature()].join('\n');
+function assembleEmailText(body, senderFirstName) {
+  return [body.trim(), '', buildSignature(senderFirstName)].join('\n');
 }
 
 // Minimal "personal letter" HTML shell, modeled directly on FootWord's
@@ -398,4 +492,4 @@ Just the script text, nothing else.`;
   }
 }
 
-module.exports = { generateSms, generateWhatsApp, generateEmail, generateCallScript };
+module.exports = { generateSms, generateWhatsApp, generateEmail, generateCallScript, generateDecoyOpener, generatePivotEmail };

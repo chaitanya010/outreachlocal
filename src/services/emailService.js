@@ -42,13 +42,19 @@ function getTransporter() {
  * @param {string} [opts.replyTo]
  * @param {object} [opts.headers]     extra email headers (e.g. List-Unsubscribe)
  * @param {object[]} [opts.attachments] [{ filename, content (base64 string) }]
+ * @param {string} [opts.from]     override sender address (multi-mailbox rotation) --
+ *                                 must be an address at a verified SES identity;
+ *                                 defaults to SES_FROM_EMAIL
+ * @param {string} [opts.fromName] override sender display name; defaults to SES_FROM_NAME
  * @returns {Promise<{ messageId: string }>}
  */
-async function sendEmail({ to, subject, html, text, replyTo, headers, attachments }) {
-  if (!FROM_EMAIL) throw new Error('SES_FROM_EMAIL is required');
+async function sendEmail({ to, subject, html, text, replyTo, headers, attachments, from, fromName }) {
+  const fromEmail = from || FROM_EMAIL;
+  const fromDisplayName = fromName || FROM_NAME;
+  if (!fromEmail) throw new Error('SES_FROM_EMAIL is required');
 
   const mailOptions = {
-    from: `${FROM_NAME} <${FROM_EMAIL}>`,
+    from: `${fromDisplayName} <${fromEmail}>`,
     to,
     subject,
     html,

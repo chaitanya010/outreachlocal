@@ -103,33 +103,38 @@ Just the message text, nothing else.`;
 
 // Cold-email specific system prompt: plain text, human, brief. Deliberately
 // separate from SYSTEM_PROMPT (used by SMS/WhatsApp/call script) since those
-// channels have their own established formats -- this one encodes the
-// deliverability-first philosophy: never sound like an agency, never invent
-// facts, never use HTML/emojis/hype, one CTA, one genuine observation.
-// Live testing (real sends, checking inbox vs Promotions) narrowed this down
-// hard: it was never really about HTML vs plain text, links, or attachments.
-// The email that consistently lands in the Inbox has NO company self-intro
-// ("At StanWeb, we..."), NO service list, and signs off with just a first
-// name -- it reads as one person reaching out to another, not a pitch.
-// Every version that named the company or listed services landed in
-// Promotions, even in bare plain text with zero links. So: no company name,
-// no service list, no "we help businesses like yours" framing, in the body.
-const EMAIL_SYSTEM_PROMPT = `You write short, personal cold outreach emails on behalf of Chaitanya, who
-helps local businesses (salons, spas, clinics, med spas, and similar) reduce no-shows and
-bring in more repeat business.
+// channels have their own established formats. Live testing (real sends,
+// checking inbox vs Promotions) established that a company self-intro
+// ("At StanWeb, we...") or naming a PRODUCT/service ("AI voice calling", "AI
+// receptionist") reliably reads as marketing language and lands in
+// Promotions -- so this missed-calls/competitor-urgency angle deliberately
+// describes the CAPABILITY in plain human language instead of naming the
+// thing: "something that picks up" / "answers automatically" rather than
+// "AI voice calling system". Same words a business owner would use
+// describing it to a friend, not a product name. Still no company/brand
+// name, no links, no bullet lists, no HTML.
+const EMAIL_SYSTEM_PROMPT = `You write short, direct cold outreach emails on behalf of Chaitanya, who helps local
+businesses (salons, spas, clinics, med spas, home services, and similar) stop losing
+customers to missed calls -- including after-hours calls and two calls at once.
 
 Rules -- follow all of these exactly:
-- Write like a real 1:1 email from one person to another business owner. NOT a company
-  pitch: do not name the company, do not list services or tools, do not say "we help
-  businesses like yours" or anything that reads as a sales introduction.
-- 40-70 words total. 2-4 short sentences/paragraphs. Plain text only, no HTML, no emojis,
-  no bold, no bullet lists, no exaggeration, no hype words.
-- Include exactly ONE genuine personalized observation, using ONLY the specific fact(s)
-  given to you below. Never invent a detail that wasn't given to you.
-- Include exactly ONE call to action asking for a short conversation (e.g. "Would you
-  have 15 minutes this week to talk?"), not a reply-for-more-info CTA and not a link.
+- Write like a real 1:1 email from one person to another business owner, not a company
+  pitch. Do not name the company ("StanWeb"), do not use product/feature names like
+  "AI voice calling", "AI receptionist", "system", "software", "solution", or "platform"
+  -- describe what happens in plain human words instead (e.g. "something that picks up
+  every call, even after hours, even if two people call at once, and books them right
+  then") never the name of the thing.
+- Structure: (1) a short, genuine question about how they currently handle calls, (2)
+  one honest sentence naming the real cost of a missed call (a lost booking/customer --
+  no invented numbers or fake statistics), (3) one sentence of real urgency, described
+  in plain terms (other businesses like theirs already have something that answers
+  every call and books appointments on the spot, day or night), (4) end asking them to
+  reply to set it up.
+- 50-90 words total, short sentences/paragraphs. Plain text only, no HTML, no emojis, no
+  bold, no bullet lists, no ALL CAPS, no fake urgency words like "act now" or "limited
+  time" -- the urgency should come from the competitor framing, not hype language.
 - Do not include a signature or sign-off -- that's added separately.
-- Do not include any links or company/brand names in the body text.`;
+- Do not include any links in the body text.`;
 
 // Subset of the spec's "SERVICES TO OFFER" table — keyed by business_type so the
 // AI pitch stays relevant per-industry without an extra AI call.
@@ -163,7 +168,7 @@ function offerForLead(lead) {
   const match = Object.keys(INDUSTRY_OFFERS).find((k) => type.includes(k));
   return match
     ? INDUSTRY_OFFERS[match]
-    : 'a professional website with online booking, payments, and an AI chatbot';
+    : 'answering every call automatically, even after hours or if two people call at once, and booking the appointment on the spot';
 }
 
 // `offer` (from offerForLead/INDUSTRY_OFFERS) is deliberately used only as an
@@ -181,30 +186,30 @@ function offerForLead(lead) {
 // not through richer content.
 const STAGE_ANGLES = {
   1: (offer) =>
-    `This is the FIRST email -- reach out directly and personally, like you're writing to
-one specific business owner you looked into, not sending a pitch. Do not introduce a
-company or explain what you do. Structure it invisibly as Problem -> brief Agitate ->
-soft ask: state the one real observation below like you actually noticed it, briefly
-note why it likely costs them (a missed call, a no-show, a lost booking -- pick
-whichever fits), then ask permission for a short conversation rather than assuming
-they want one. (Internal angle hint, don't name it: ${offer})`,
+    `This is the FIRST email -- follow the (1)(2)(3)(4) structure from the system prompt
+exactly: question about how they handle calls, cost of a missed call, plain-language
+competitor urgency, reply-to-set-it-up CTA. If the observation below fits naturally as
+the specific detail behind the question, use it; otherwise keep the question general.
+(Internal detail, only if it fits naturally, never name it as a product: ${offer})`,
   2: (offer) =>
     `This is a brief FOLLOW-UP (their 2nd email, no reply yet). Different angle from the
-first email: ask a genuine, curious QUESTION about the observation below instead of
-restating it as a fact -- like you're checking whether it's actually a pain point for
-them, not assuming. Keep it short and conversational, non-pitchy. Still end with the
-same soft ask for a short conversation. (Internal angle hint, don't name it: ${offer})`,
+first: instead of asking how they handle calls, ask directly whether missed calls
+during busy hours or after-hours are something that actually happens for them --
+genuinely curious, not assuming. Keep the same plain-language urgency (others in their
+line of work already have something that answers every call and books on the spot) and
+the same reply-to-set-it-up close. (Internal detail, only if it fits naturally: ${offer})`,
   3: (offer) =>
-    `This is a brief FOLLOW-UP (their 3rd email, no reply yet). Use a quick Before/After
-contrast in plain language -- where things likely stand now vs. what it'd look like if
-that one thing below were handled -- then make it low-effort to say yes: offer to just
-share a couple of specific ideas for their business if they're open to it, not as a
-named offer/product. (Internal angle hint, don't name it: ${offer})`,
+    `This is a brief FOLLOW-UP (their 3rd email, no reply yet). Quick Before/After in
+plain language -- calls going unanswered now vs. every call picked up and booked
+automatically, day or night -- then make it low-effort to say yes: ask if they'd be
+open to just seeing how it'd work for their business, no pressure. (Internal detail,
+only if it fits naturally: ${offer})`,
   4: () =>
     `This is the LAST email (their 4th, no reply yet) -- a brief, polite breakup note.
-Make it genuinely low-pressure and okay for them to say nothing (it's fine if the
-timing's just not right), acknowledge this is the last note on this, leave the door
-open, thank them for their time.`,
+One last honest line that competitors picking up every call while they're still missing
+some is a gap that keeps widening the longer it goes unaddressed, but make it genuinely
+low-pressure and okay for them to say nothing. Thank them for their time, leave the
+door open.`,
 };
 
 function stringHash(key) {
@@ -280,11 +285,11 @@ async function generateEmail(lead, stage = 1) {
 
 ${angle}
 
-The ONE real observation you may reference (use only this, don't add anything else): ${observation || 'they don\'t currently have a strong online presence'}
+A specific detail about their business you may weave in ONLY if it fits naturally (never invent anything beyond this): ${observation || 'no specific detail available -- keep it general'}
 
 Return JSON with exactly two fields:
-- "subjects": an array of exactly 5 subject line variants, each 2-4 words, plain and low-key (like "quick question" or "for {lead.name}"), not curiosity-bait, no ALL CAPS, no exclamation marks, and none of these words: free, guaranteed, offer, discount, urgent, act now, limited time, winner
-- "body": the plain text email body (40-70 words, 2-4 short sentences/paragraphs, ending with the one CTA — no signature, no sign-off, no links, no company name)
+- "subjects": an array of exactly 5 subject line variants, each 2-4 words, plain and low-key (like "quick question" or "missed calls?"), not curiosity-bait, no ALL CAPS, no exclamation marks, and none of these words: free, guaranteed, offer, discount, urgent, act now, limited time, winner
+- "body": the plain text email body (50-90 words, following the (1)(2)(3)(4) structure from the system prompt, ending with the one CTA — no signature, no sign-off, no links, no company or product name)
 
 Just the JSON object, nothing else.`;
 
@@ -316,7 +321,7 @@ Just the JSON object, nothing else.`;
     logger.error('AI email generation failed, using fallback', { message: err.message, stage });
     subject = 'quick question';
     subjectVariant = -1; // fallback path, not one of the 5 AI variants
-    body = `Hi${firstName ? ` ${firstName}` : ''},\n\nI came across ${lead.name} and noticed ${observation || 'you don\'t have a website yet'}. Wanted to reach out directly rather than send a generic pitch.\n\nWould you have 15 minutes this week to talk?`;
+    body = `Hi${firstName ? ` ${firstName}` : ''}, how are you currently handling calls at ${lead.name}? A missed call during a busy stretch or after hours usually means that customer just calls the next place instead.\n\nA lot of businesses like yours now have something that picks up every call automatically, even two at once, and books the appointment on the spot.\n\nWorth a quick reply if you'd want to see how it'd work for you?`;
   }
 
   // Plain text only, no html field -- live testing showed even the

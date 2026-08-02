@@ -45,6 +45,12 @@ try {
 
 const app = express();
 
+// Railway (and most PaaS hosts) sit in front of the app as a single reverse
+// proxy -- without this, Express doesn't trust the X-Forwarded-For header,
+// so express-rate-limit can't tell real client IPs apart and logs a
+// ValidationError on every request instead of rate-limiting accurately.
+app.set('trust proxy', 1);
+
 // ─── Middleware ───────────────────────────────────────────────────────────────
 
 app.use(express.json());

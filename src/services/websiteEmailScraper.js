@@ -34,8 +34,11 @@ const VALID_TLDS = new Set([
 // that show up embedded in or linked from a business's page.
 const IGNORE_PATTERNS = [
   // Platform/template system addresses
-  /^(info|support)@(wixpress|godaddy|squarespace|weebly|shopify)\.com$/i,
-  /@(schema\.org|w3\.org|googleapis\.com|gstatic\.com|example\.com|domain\.com|mystore\.com|mysite\.com)$/i,
+  /^(info|support)@(godaddy|squarespace|weebly|shopify)\.com$/i,
+  // wixpress.com is Wix's own internal infrastructure domain (error tracking,
+  // asset hosting, etc) -- ANY address here is platform-internal, never a
+  // real business's contact, unlike the info@/support@-only vendors above.
+  /@(schema\.org|w3\.org|googleapis\.com|gstatic\.com|example\.com|domain\.com|mystore\.com|mysite\.com|wixpress\.com)$/i,
   // Placeholder/template dummy values ("you@email.com", "your@domain.com", etc.)
   /^(you|your|name|user|test|username)@(email|domain|mail|yourdomain)\.com$/i,
   // Med-spa/local-business website & SEO platform vendors -- their agency
@@ -53,13 +56,23 @@ const IGNORE_PATTERNS = [
   /@(massagebook|booksy|schedulicity|vagaro|mindbodyonline|glossgenius|fresha|styleseat|square|squareup|calendly|acuityscheduling|giftly|gift(up|card)|toasttab)\.com$/i,
 ];
 
+// A local-part that's a long hex string (32-char MD5/UUID-style, or any run
+// of 20+ hex chars) is essentially never a real person's mailbox -- it's the
+// signature of an auto-generated tracking ID, DSN, or asset hash embedded in
+// page JS (analytics pixels, error-tracking SDKs, CDN asset emails). Catches
+// this class of junk address regardless of which platform/domain it's on,
+// as a backstop to the specific domain patterns above.
+const HEX_HASH_LOCAL_PART_RE = /^[a-f0-9]{20,}$/i;
+
 function extractEmails(html) {
   if (!html) return [];
   const matches = html.match(EMAIL_RE) || [];
   const unique = [...new Set(matches.map((e) => e.toLowerCase()))];
   return unique.filter((email) => {
-    const tld = email.split('.').pop();
+    const [localPart, domain] = email.split('@');
+    const tld = domain.split('.').pop();
     if (!VALID_TLDS.has(tld)) return false;
+    if (HEX_HASH_LOCAL_PART_RE.test(localPart)) return false;
     return !IGNORE_PATTERNS.some((re) => re.test(email));
   });
 }

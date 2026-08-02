@@ -45,6 +45,7 @@ const {
 } = require('../db/leadsRepository');
 const { generateEmail, generateDecoyOpener } = require('./aiMessageService');
 const { sendEmail } = require('./emailService');
+const { notifyOnRecurringFailure, resetFailureStreak } = require('../utils/notify');
 const logger = require('../utils/logger');
 
 // Overall safety valve on total sequence volume/day (new + follow-ups),
@@ -146,7 +147,12 @@ async function sendStage(lead, stage, sender) {
   });
 
   await recordEmailStageSent(lead.place_id, stage);
-  if (stage === 1) await setAssignedSender(lead.place_id, sender);
+  // Normally only needed on stage 1 (assigned once, for the lead's whole
+  // sequence) -- also backfills any lead that reaches here with no
+  // assigned_sender yet (e.g. contacted before assigned_sender existed) so
+  // it can self-heal instead of staying permanently invisible to
+  // replyWatcher.js, which requires an exact assigned_sender match.
+  if (stage === 1 || !lead.assigned_sender) await setAssignedSender(lead.place_id, sender);
   await logOutreach({
     leadId: lead.id,
     placeId: lead.place_id,
@@ -212,9 +218,30 @@ async function runOnce({ dailyCap = DAILY_CAP, minGapMinutes = MIN_GAP_MINUTES }
 
     try {
       const result = await sendStage(lead, nextStage, sender);
+      resetFailureStreak('email_send');
       return { sent: true, place_id: lead.place_id, stage: nextStage, isNew: !!isNew, sender, messageId: result.messageId };
     } catch (err) {
       logger.error('Email sequence: send failed', { place_id: lead.place_id, stage: nextStage, message: err.message });
+      // Previously swallowed entirely -- neither persisted nor surfaced, so a
+      // sustained outage (bad creds, SES throttled) would silently no-op
+      // forever with nothing to show for it. Now: a durable record + a
+      // throttled alert (first failure, then every 5th) so a one-off blip
+      // doesn't spam but a real outage still gets noticed fast.
+      await logOutreach({
+        leadId: lead.id,
+        placeId: lead.place_id,
+        channel: 'email',
+        status: 'failed',
+        message: `stage ${nextStage} send failed`,
+        error: err.message,
+        stage: nextStage,
+        sender,
+      });
+      await notifyOnRecurringFailure(
+        'email_send',
+        'OutreachLocal: email send failed',
+        `Failed to send stage ${nextStage} to ${lead.name} (${lead.email}) via ${sender}:\n\n${err.message}`
+      );
       return { sent: false, reason: 'send_failed', place_id: lead.place_id, stage: nextStage, error: err.message };
     }
   }

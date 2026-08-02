@@ -331,13 +331,179 @@ function generateDecoyOpener(lead, senderFirstName, stage = 1) {
  * emailSequence.js / replyWatcher.js). Unlike the cold-open copy above,
  * naming what this actually is is expected and honest here: the recipient
  * already replied, so it's a live conversation, not a cold pitch anymore.
+ *
+ * @param {string} [opener]  optional opener line replacing the fixed default
+ *   (see personalizePivotOpener) -- falls back to the proven fixed line if
+ *   not given or empty.
  */
-function generatePivotEmail(lead, senderFirstName) {
-  const body = `Ah, sorry — didn't mean to be cryptic there! I actually help businesses like ${lead.name} that are missing calls when they can't pick up, so those clients don't just go to someone else instead.
+function generatePivotEmail(lead, senderFirstName, opener) {
+  const openerLine = opener || 'Ah, sorry — didn\'t mean to be cryptic there!';
+  const body = `${openerLine} I actually help businesses like ${lead.name} that are missing calls when they can't pick up, so those clients don't just go to someone else instead.
 
 Thought I'd share a quick one-pager on how it works.
 
 Would it be worth a short chat to see if it's a fit for you?`;
+  const headers = lead.email ? unsubHeaders(lead.email) : undefined;
+  return { subject: 'Re: quick question', text: assembleEmailText(body, senderFirstName), headers, subjectVariant: -1, painPoint: null };
+}
+
+// ─── Reply classification (decoy-stage inbound triage) ─────────────────────
+
+const CLASSIFY_SYSTEM_PROMPT = `You classify a single inbound email reply to a short cold-outreach
+question ("what time do you close today?"). Categorize the reply's intent.
+
+Categories:
+- "interested": a genuine reply from the business owner/staff -- answering the question,
+  asking who's asking, or anything that reads like a real person engaging (even briefly
+  or skeptically).
+- "not_interested": explicitly asking to stop, unsubscribe, remove them, or a hostile/annoyed
+  reply making clear they don't want further contact.
+- "auto_reply": an automated system message -- out-of-office, vacation responder, delivery
+  failure/bounce notice, "this inbox is not monitored", etc.
+- "other": anything ambiguous, empty, or that doesn't clearly fit the above.
+
+Return JSON: {"intent": "interested" | "not_interested" | "auto_reply" | "other"}`;
+
+/**
+ * Classify an inbound reply's intent so replyWatcher.js can route it
+ * (pivot / suppress / ignore) instead of treating every reply as interest.
+ * Falls back to "interested" on any AI error or empty body -- consistent
+ * with every other AI call in this file: never let a broken AI call silently
+ * drop what might be a real reply.
+ * @param {string} bodyText  reply body, quoted original already stripped
+ * @param {string} subject
+ * @returns {Promise<'interested'|'not_interested'|'auto_reply'|'other'>}
+ */
+async function classifyReply(bodyText, subject) {
+  const text = (bodyText || '').trim();
+  if (!text) return 'interested';
+
+  try {
+    const res = await getClient().chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: CLASSIFY_SYSTEM_PROMPT },
+        { role: 'user', content: `Subject: ${subject || '(none)'}\n\nBody:\n${text.slice(0, 2000)}` },
+      ],
+      max_tokens: 20,
+      temperature: 0.1,
+      response_format: { type: 'json_object' },
+    });
+
+    const parsed = JSON.parse(res.choices[0].message.content);
+    const valid = ['interested', 'not_interested', 'auto_reply', 'other'];
+    return valid.includes(parsed.intent) ? parsed.intent : 'interested';
+  } catch (err) {
+    logger.error('AI reply classification failed, defaulting to interested', { message: err.message });
+    return 'interested';
+  }
+}
+
+/**
+ * Generate a one-sentence opener acknowledging what the lead actually wrote,
+ * to replace the fixed pivot opener line. Falls back to null (caller uses
+ * the fixed default) on any AI error or empty body.
+ * @param {string} replyText  the lead's reply, quoted original stripped
+ * @param {string} leadName
+ * @returns {Promise<string|null>}
+ */
+async function personalizePivotOpener(replyText, leadName) {
+  const text = (replyText || '').trim();
+  if (!text) return null;
+
+  const prompt = `A business owner at ${leadName} replied "${text.slice(0, 500)}" to a casual question
+("what time do you close today?"). Write ONE short, warm, conversational sentence
+acknowledging their reply before pivoting to explain why you actually reached out
+(e.g. thanking them for the hours, or reacting naturally if they asked who this is).
+No more than 15 words. Plain text, no quotes around it, no emojis.`;
+
+  try {
+    const res = await getClient().chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: 'You write short, natural, human email opener lines. Never sound scripted.' },
+        { role: 'user', content: prompt },
+      ],
+      max_tokens: 40,
+      temperature: 0.7,
+    });
+
+    const opener = res.choices[0].message.content.trim();
+    return opener || null;
+  } catch (err) {
+    logger.error('AI pivot opener personalization failed, using default', { message: err.message });
+    return null;
+  }
+}
+
+// ─── Booking-link flow (post-pivot reply -> demo booked) ───────────────────
+
+const CLASSIFY_POST_PIVOT_SYSTEM_PROMPT = `You classify a single inbound email reply to a pivot/reveal
+email that ended by asking "would it be worth a short chat to see if it's a fit for you?".
+Categorize the reply's intent.
+
+Categories:
+- "wants_meeting": a clear yes / agreement to talk, or they're asking how/when to schedule --
+  anything that reads as ready to book a call.
+- "not_interested": explicitly declining, asking to stop/unsubscribe/remove them, or hostile.
+- "auto_reply": an automated system message -- out-of-office, vacation responder, delivery
+  failure/bounce notice, "this inbox is not monitored", etc.
+- "other": a real question, hesitation, or anything ambiguous that isn't a clear yes or no --
+  needs a human reply, not an automated one.
+
+Return JSON: {"intent": "wants_meeting" | "not_interested" | "auto_reply" | "other"}`;
+
+/**
+ * Classify a reply to the pivot/reveal email so replyWatcher.js can decide
+ * whether to send the booking link automatically. Falls back to "other" (not
+ * "wants_meeting") on any AI error or empty body -- unlike classifyReply's
+ * fallback, sending a calendar link on a broken classification is worse here
+ * than just staying silent and letting it get flagged for manual follow-up.
+ * @param {string} bodyText  reply body, quoted original already stripped
+ * @param {string} subject
+ * @returns {Promise<'wants_meeting'|'not_interested'|'auto_reply'|'other'>}
+ */
+async function classifyPostPivotReply(bodyText, subject) {
+  const text = (bodyText || '').trim();
+  if (!text) return 'other';
+
+  try {
+    const res = await getClient().chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: CLASSIFY_POST_PIVOT_SYSTEM_PROMPT },
+        { role: 'user', content: `Subject: ${subject || '(none)'}\n\nBody:\n${text.slice(0, 2000)}` },
+      ],
+      max_tokens: 20,
+      temperature: 0.1,
+      response_format: { type: 'json_object' },
+    });
+
+    const parsed = JSON.parse(res.choices[0].message.content);
+    const valid = ['wants_meeting', 'not_interested', 'auto_reply', 'other'];
+    return valid.includes(parsed.intent) ? parsed.intent : 'other';
+  } catch (err) {
+    logger.error('AI post-pivot reply classification failed, defaulting to other', { message: err.message });
+    return 'other';
+  }
+}
+
+/**
+ * The booking email -- sent once (see booking_sent) as soon as a reply to
+ * the pivot signals real interest (classifyPostPivotReply === 'wants_meeting').
+ * Fixed template rather than open-ended AI body copy (only the opener line is
+ * AI-personalized, via personalizePivotOpener reused here) -- keeps the
+ * actual booking ask low-risk and consistent, same philosophy as
+ * generatePivotEmail.
+ * @param {string} [opener]  optional opener line (see personalizePivotOpener)
+ */
+function generateBookingEmail(lead, senderFirstName, opener) {
+  const openerLine = opener || 'Great, glad to hear it!';
+  const calendlyUrl = process.env.CALENDLY_URL;
+  const bookingLine = calendlyUrl
+    ? `Here's my calendar -- grab whatever time works best for a quick call: ${calendlyUrl}`
+    : `Let me know a good day/time this week and I'll send over an invite.`;
+  const body = `${openerLine} ${bookingLine}\n\nTalk soon!`;
   const headers = lead.email ? unsubHeaders(lead.email) : undefined;
   return { subject: 'Re: quick question', text: assembleEmailText(body, senderFirstName), headers, subjectVariant: -1, painPoint: null };
 }
@@ -492,4 +658,15 @@ Just the script text, nothing else.`;
   }
 }
 
-module.exports = { generateSms, generateWhatsApp, generateEmail, generateCallScript, generateDecoyOpener, generatePivotEmail };
+module.exports = {
+  generateSms,
+  generateWhatsApp,
+  generateEmail,
+  generateCallScript,
+  generateDecoyOpener,
+  generatePivotEmail,
+  classifyReply,
+  personalizePivotOpener,
+  classifyPostPivotReply,
+  generateBookingEmail,
+};

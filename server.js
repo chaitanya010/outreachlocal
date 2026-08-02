@@ -10,6 +10,30 @@ const emailSequenceRouter = require('./src/routes/emailSequence');
 const discoveryRouter = require('./src/routes/discovery');
 const sesWebhookRouter = require('./src/routes/sesWebhook');
 const logger = require('./src/utils/logger');
+const { notifyOwner } = require('./src/utils/notify');
+
+// ─── Crash protection ─────────────────────────────────────────────────────────
+// Node 15+ kills the whole process on any unhandled promise rejection by
+// default -- without this, one unexpected error anywhere (a route handler, a
+// library call inside a cron job) takes down leads/discovery/email/reply-
+// watcher together, not just whatever failed. Every job's own tick() already
+// catches its own errors (see emailCron.js, discoveryCron.js, replyWatcher.js)
+// so in practice this is a safety net for anything those don't cover (route
+// handlers, library internals) -- log it, alert the owner, and keep serving
+// for a rejection; for a truly uncaught exception (process may be in a bad
+// state), alert then exit so the process supervisor restarts it cleanly.
+process.on('unhandledRejection', async (reason) => {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  const stack = reason instanceof Error ? reason.stack : undefined;
+  logger.error('Unhandled promise rejection', { message, stack });
+  await notifyOwner('OutreachLocal: unhandled error', `${message}\n\n${stack || ''}`);
+});
+
+process.on('uncaughtException', async (err) => {
+  logger.error('Uncaught exception -- process will exit', { message: err.message, stack: err.stack });
+  await notifyOwner('OutreachLocal: server crashed, restarting', `${err.message}\n\n${err.stack || ''}`);
+  process.exit(1);
+});
 
 // Validate env on startup
 try {
@@ -72,6 +96,10 @@ if (require.main === module) {
 
   if (process.env.ENABLE_REPLY_WATCHER_CRON !== 'false') {
     require('./src/jobs/replyWatcher').start();
+  }
+
+  if (process.env.ENABLE_HEALTHCHECK_CRON !== 'false') {
+    require('./src/jobs/healthCheck').start();
   }
 }
 

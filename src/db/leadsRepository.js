@@ -382,6 +382,48 @@ async function markPivotSent(placeId) {
 }
 
 /**
+ * Leads that already replied to the pivot/reveal email (email_pivot_sent) but
+ * haven't been sent the booking link yet -- the pool replyWatcher.js checks a
+ * mailbox's incoming mail against once the decoy-stage lookup misses. Scoped
+ * to email_stopped=false like the rest of the sequence; NOT scoped to a
+ * single sender for the same reason as getDecoyStageLeadsBySenderAndEmail.
+ */
+async function getPostPivotAwaitingBookingLeads(sender, email) {
+  const db = getClient();
+  const { data, error } = await db
+    .from(TABLE)
+    .select('*')
+    .eq('assigned_sender', sender)
+    .eq('email', email)
+    .eq('email_pivot_sent', true)
+    .eq('booking_sent', false)
+    .eq('email_stopped', false)
+    .limit(1);
+
+  if (error) {
+    logger.error('getPostPivotAwaitingBookingLeads failed', { sender, email, message: error.message });
+    throw error;
+  }
+  return data && data.length ? data[0] : null;
+}
+
+/**
+ * Marks the booking-link email as sent for a lead, so a second/third reply
+ * from the same lead doesn't trigger it again.
+ */
+async function markBookingSent(placeId) {
+  const db = getClient();
+  const { error } = await db
+    .from(TABLE)
+    .update({ booking_sent: true })
+    .eq('place_id', placeId);
+  if (error) {
+    logger.error('markBookingSent failed', { placeId, message: error.message });
+    throw error;
+  }
+}
+
+/**
  * Whether we've already processed a given inbound reply (by its Message-ID
  * header) -- dedup guard for replyWatcher.js so re-polling the same mailbox
  * never double-processes a reply. Deliberately does NOT rely on IMAP \Seen
@@ -744,6 +786,8 @@ module.exports = {
   getDecoyStageLeadsBySenderAndEmail,
   getLastDecoyMessageId,
   markPivotSent,
+  getPostPivotAwaitingBookingLeads,
+  markBookingSent,
   hasProcessedInboundMessage,
   getRecentSearchHistory,
   recordSearchHistory,

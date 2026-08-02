@@ -17,6 +17,7 @@ const cron = require('node-cron');
 const emailSequence = require('../services/emailSequence');
 const { getLeadsMissingEmail, updateEnrichment } = require('../db/leadsRepository');
 const { enrichBatch } = require('../services/enrichmentService');
+const { notifyOnRecurringFailure, resetFailureStreak } = require('../utils/notify');
 const logger = require('../utils/logger');
 
 const TICK_MINUTES = parseInt(process.env.EMAIL_TICK_MINUTES || '30', 10);
@@ -36,8 +37,14 @@ async function tick() {
     } else {
       logger.info('Email cron tick: no-op', result);
     }
+    resetFailureStreak('email_cron_tick');
   } catch (err) {
+    // runOnce() already catches send failures internally (see
+    // emailSequence.js) -- reaching here means something more fundamental
+    // broke (e.g. the candidates query itself), which is rarer and equally
+    // worth knowing about fast.
     logger.error('Email cron tick failed', { message: err.message });
+    await notifyOnRecurringFailure('email_cron_tick', 'OutreachLocal: email cron tick crashed', err.message);
   }
 }
 
@@ -55,8 +62,10 @@ async function enrichTick() {
     }
     const result = await enrichBatch(leads, updateEnrichment);
     logger.info('Email cron enrich tick: done', { candidates: leads.length, ...result });
+    resetFailureStreak('email_cron_enrich');
   } catch (err) {
     logger.error('Email cron enrich tick failed', { message: err.message });
+    await notifyOnRecurringFailure('email_cron_enrich', 'OutreachLocal: email enrich tick crashed', err.message);
   }
 }
 

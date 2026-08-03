@@ -179,74 +179,93 @@ async function peekNextCandidate() {
   return candidates.length ? candidates[0] : null;
 }
 
+// Two independent triggers call runOnce() on the same running process — the
+// internal node-cron tick and the GitHub Actions workflow hitting
+// /outreach/email/run (both roughly every 30min, sometimes within seconds of
+// each other). Without this lock, two overlapping calls could both read
+// "no send due yet" before either had written its result, and both send the
+// same due lead's next stage. All of runOnce()'s DB reads happen before its
+// one write (recordEmailStageSent), so a simple in-process mutex closes that
+// window; it does not protect against multiple server instances, but this
+// service runs as a single Railway process.
+let runInProgress = false;
+
 /**
  * Run one drip cycle: enforce the overall daily cap + min gap, then send at
  * most one email — a due follow-up if one exists, otherwise a fresh intro
  * (skipped once every mailbox in the pool has hit its own per-sender cap).
  */
 async function runOnce({ dailyCap = DAILY_CAP, minGapMinutes = MIN_GAP_MINUTES } = {}) {
-  const sentToday = await countEmailSendsToday();
-  if (sentToday >= dailyCap) {
-    return { sent: false, reason: 'daily_cap_reached', sentToday, dailyCap };
+  if (runInProgress) {
+    return { sent: false, reason: 'run_already_in_progress' };
   }
-
-  const lastSentAt = await getLastEmailSendTime();
-  if (lastSentAt) {
-    const minutesSince = (Date.now() - Date.parse(lastSentAt)) / 60000;
-    const jitter = Math.random() * MAX_JITTER_MINUTES;
-    const requiredGap = minGapMinutes + jitter;
-    if (minutesSince < requiredGap) {
-      return { sent: false, reason: 'min_gap_not_elapsed', minutesSince: Math.round(minutesSince), requiredGap: Math.round(requiredGap) };
-    }
-  }
-
-  // Look at a small window of due candidates (follow-ups first) so a
-  // maxed-out new-lead cap doesn't block a genuinely due follow-up, and vice
-  // versa: if the only due candidates are new leads and every sender's
-  // capped, no-op.
-  const candidates = await getEmailSequenceCandidates(10);
-  if (!candidates.length) return { sent: false, reason: 'no_candidates' };
-
-  for (const { lead, nextStage, isNew } of candidates) {
-    let sender;
-    if (isNew) {
-      sender = await pickLeastLoadedSender();
-      if (!sender) continue; // every mailbox hit its per-sender new-lead cap today, try next candidate
-    } else {
-      sender = lead.assigned_sender || SENDER_POOL[0];
+  runInProgress = true;
+  try {
+    const sentToday = await countEmailSendsToday();
+    if (sentToday >= dailyCap) {
+      return { sent: false, reason: 'daily_cap_reached', sentToday, dailyCap };
     }
 
-    try {
-      const result = await sendStage(lead, nextStage, sender);
-      resetFailureStreak('email_send');
-      return { sent: true, place_id: lead.place_id, stage: nextStage, isNew: !!isNew, sender, messageId: result.messageId };
-    } catch (err) {
-      logger.error('Email sequence: send failed', { place_id: lead.place_id, stage: nextStage, message: err.message });
-      // Previously swallowed entirely -- neither persisted nor surfaced, so a
-      // sustained outage (bad creds, SES throttled) would silently no-op
-      // forever with nothing to show for it. Now: a durable record + a
-      // throttled alert (first failure, then every 5th) so a one-off blip
-      // doesn't spam but a real outage still gets noticed fast.
-      await logOutreach({
-        leadId: lead.id,
-        placeId: lead.place_id,
-        channel: 'email',
-        status: 'failed',
-        message: `stage ${nextStage} send failed`,
-        error: err.message,
-        stage: nextStage,
-        sender,
-      });
-      await notifyOnRecurringFailure(
-        'email_send',
-        'OutreachLocal: email send failed',
-        `Failed to send stage ${nextStage} to ${lead.name} (${lead.email}) via ${sender}:\n\n${err.message}`
-      );
-      return { sent: false, reason: 'send_failed', place_id: lead.place_id, stage: nextStage, error: err.message };
+    const lastSentAt = await getLastEmailSendTime();
+    if (lastSentAt) {
+      const minutesSince = (Date.now() - Date.parse(lastSentAt)) / 60000;
+      const jitter = Math.random() * MAX_JITTER_MINUTES;
+      const requiredGap = minGapMinutes + jitter;
+      if (minutesSince < requiredGap) {
+        return { sent: false, reason: 'min_gap_not_elapsed', minutesSince: Math.round(minutesSince), requiredGap: Math.round(requiredGap) };
+      }
     }
-  }
 
-  return { sent: false, reason: 'new_lead_cap_reached', perSenderCap: PER_SENDER_NEW_LEADS_PER_DAY, senderPoolSize: SENDER_POOL.length };
+    // Look at a small window of due candidates (follow-ups first) so a
+    // maxed-out new-lead cap doesn't block a genuinely due follow-up, and vice
+    // versa: if the only due candidates are new leads and every sender's
+    // capped, no-op.
+    const candidates = await getEmailSequenceCandidates(10);
+    if (!candidates.length) return { sent: false, reason: 'no_candidates' };
+
+    for (const { lead, nextStage, isNew } of candidates) {
+      let sender;
+      if (isNew) {
+        sender = await pickLeastLoadedSender();
+        if (!sender) continue; // every mailbox hit its per-sender new-lead cap today, try next candidate
+      } else {
+        sender = lead.assigned_sender || SENDER_POOL[0];
+      }
+
+      try {
+        const result = await sendStage(lead, nextStage, sender);
+        resetFailureStreak('email_send');
+        return { sent: true, place_id: lead.place_id, stage: nextStage, isNew: !!isNew, sender, messageId: result.messageId };
+      } catch (err) {
+        logger.error('Email sequence: send failed', { place_id: lead.place_id, stage: nextStage, message: err.message });
+        // Previously swallowed entirely -- neither persisted nor surfaced, so a
+        // sustained outage (bad creds, SES throttled) would silently no-op
+        // forever with nothing to show for it. Now: a durable record + a
+        // throttled alert (first failure, then every 5th) so a one-off blip
+        // doesn't spam but a real outage still gets noticed fast.
+        await logOutreach({
+          leadId: lead.id,
+          placeId: lead.place_id,
+          channel: 'email',
+          status: 'failed',
+          message: `stage ${nextStage} send failed`,
+          error: err.message,
+          stage: nextStage,
+          sender,
+        });
+        await notifyOnRecurringFailure(
+          'email_send',
+          'OutreachLocal: email send failed',
+          `Failed to send stage ${nextStage} to ${lead.name} (${lead.email}) via ${sender}:\n\n${err.message}`
+        );
+        return { sent: false, reason: 'send_failed', place_id: lead.place_id, stage: nextStage, error: err.message };
+      }
+    }
+
+    return { sent: false, reason: 'new_lead_cap_reached', perSenderCap: PER_SENDER_NEW_LEADS_PER_DAY, senderPoolSize: SENDER_POOL.length };
+  } finally {
+    runInProgress = false;
+  }
 }
 
 async function markReplied(placeId) {

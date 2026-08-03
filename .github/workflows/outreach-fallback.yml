@@ -1,0 +1,65 @@
+name: Outreach Fallback (independent execution)
+
+# Runs the SAME cold-email sequence engine (src/services/emailSequence.js)
+# directly on the GitHub Actions runner -- checks out the repo, installs
+# deps, and calls emailSequence.runOnce() against Supabase + AWS SES
+# directly. Unlike outreach-cron.yml (which just POSTs to the Railway app
+# and does nothing if Railway itself is down), this workflow does not touch
+# Railway at all, so daily outreach keeps happening even if the Railway app
+# is crashed, redeploying, or otherwise unavailable.
+#
+# Safe to run unconditionally alongside Railway's own scheduling (its
+# internal node-cron AND outreach-cron.yml) -- every worker calling
+# runOnce() claims a lead+stage atomically in Supabase before sending
+# (see claimLeadForStage in leadsRepository.js), so simultaneous execution
+# from multiple workers can never send the same lead the same stage twice.
+# Most invocations of this workflow will simply find "no candidates" or
+# "min gap not elapsed" and no-op -- that's expected, not a failure.
+#
+# Offset 15 minutes from outreach-cron.yml's :00/:30 schedule purely to
+# spread load a little; the two schedules overlapping would be equally safe.
+
+on:
+  schedule:
+    - cron: '15,45 13-21 * * 1-5'
+  workflow_dispatch: {} # manual trigger from the Actions tab, for testing
+
+jobs:
+  run-fallback-outreach:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run fallback outreach cycle
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          SES_FROM_EMAIL: ${{ secrets.SES_FROM_EMAIL }}
+          SES_FROM_NAME: ${{ secrets.SES_FROM_NAME }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          EMAIL_SENDER_POOL: ${{ secrets.EMAIL_SENDER_POOL }}
+          EMAIL_SENDER_NAMES: ${{ secrets.EMAIL_SENDER_NAMES }}
+          EMAIL_DAILY_CAP: ${{ secrets.EMAIL_DAILY_CAP }}
+          EMAIL_MIN_GAP_MINUTES: ${{ secrets.EMAIL_MIN_GAP_MINUTES }}
+          EMAIL_NEW_LEADS_PER_DAY_PER_SENDER: ${{ secrets.EMAIL_NEW_LEADS_PER_DAY_PER_SENDER }}
+          SENDER_NAME: ${{ secrets.SENDER_NAME }}
+          # Same values as the existing outreach-cron.yml secrets -- these
+          # both build the unsubscribe link (SERVER_URL) and its HMAC token
+          # (CRON_SECRET), which are only ever verified by Railway's
+          # /unsubscribe endpoint, so this MUST be the exact same CRON_SECRET
+          # Railway itself uses, not a new value.
+          SERVER_URL: ${{ secrets.OUTREACH_SERVER_URL }}
+          CRON_SECRET: ${{ secrets.OUTREACH_CRON_SECRET }}
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
+        run: npm run outreach:fallback

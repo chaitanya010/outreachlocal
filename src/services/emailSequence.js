@@ -11,6 +11,17 @@
  * caller (a cron job / external scheduler) invokes this, not by an internal
  * scheduler.
  *
+ * runOnce() can be called by more than one independent scheduler (Railway's
+ * in-process cron, and a GitHub-Actions fallback runner that executes this
+ * same module directly against Supabase -- see scripts/fallbackOutreachRun.js
+ * -- so daily outreach still happens if Railway itself is temporarily down).
+ * The in-process `runInProgress` lock only protects against two overlapping
+ * calls within the SAME process; the thing that actually makes two different
+ * processes/machines calling this at the same moment safe is the atomic
+ * per-lead claim in claimLeadForStage() (leadsRepository.js) -- a lead is
+ * only ever sent to once a worker has won that claim, so two workers racing
+ * for the same due lead can never both send it.
+ *
  * Stages 1-2 are deliberately NOT a pitch -- a short, genuine-sounding
  * question ("what time do you close today?") meant to read as a real
  * customer, not outreach, so the goal is a reply rather than a read. Once a
@@ -33,6 +44,8 @@
 const {
   getEmailSequenceCandidates,
   recordEmailStageSent,
+  claimLeadForStage,
+  releaseClaim,
   setEmailFlag,
   logOutreach,
   countEmailSendsToday,
@@ -195,7 +208,7 @@ let runInProgress = false;
  * most one email — a due follow-up if one exists, otherwise a fresh intro
  * (skipped once every mailbox in the pool has hit its own per-sender cap).
  */
-async function runOnce({ dailyCap = DAILY_CAP, minGapMinutes = MIN_GAP_MINUTES } = {}) {
+async function runOnce({ dailyCap = DAILY_CAP, minGapMinutes = MIN_GAP_MINUTES, workerId = process.env.WORKER_ID || 'railway' } = {}) {
   if (runInProgress) {
     return { sent: false, reason: 'run_already_in_progress' };
   }
@@ -224,20 +237,33 @@ async function runOnce({ dailyCap = DAILY_CAP, minGapMinutes = MIN_GAP_MINUTES }
     if (!candidates.length) return { sent: false, reason: 'no_candidates' };
 
     for (const { lead, nextStage, isNew } of candidates) {
+      // Cross-process/cross-machine guard: two workers (Railway + the
+      // GitHub-Actions fallback, or two overlapping Railway triggers) can
+      // both reach this point for the same lead. Only one atomic UPDATE can
+      // ever match this lead's current email_stage, so only one worker wins
+      // the claim -- the other simply moves on to the next candidate rather
+      // than sending a duplicate.
+      const claimed = await claimLeadForStage(lead.place_id, lead.email_stage || 0, workerId);
+      if (!claimed) continue;
+
       let sender;
       if (isNew) {
         sender = await pickLeastLoadedSender();
-        if (!sender) continue; // every mailbox hit its per-sender new-lead cap today, try next candidate
+        if (!sender) {
+          await releaseClaim(lead.place_id); // no sender available -- free the lead back up immediately, not after the claim timeout
+          continue; // every mailbox hit its per-sender new-lead cap today, try next candidate
+        }
       } else {
         sender = lead.assigned_sender || SENDER_POOL[0];
       }
 
       try {
-        const result = await sendStage(lead, nextStage, sender);
-        resetFailureStreak('email_send');
-        return { sent: true, place_id: lead.place_id, stage: nextStage, isNew: !!isNew, sender, messageId: result.messageId };
+        const result = await sendStage(lead, nextStage, sender); // recordEmailStageSent (inside sendStage) also clears the claim on success
+        await resetFailureStreak('email_send');
+        return { sent: true, place_id: lead.place_id, stage: nextStage, isNew: !!isNew, sender, messageId: result.messageId, workerId };
       } catch (err) {
         logger.error('Email sequence: send failed', { place_id: lead.place_id, stage: nextStage, message: err.message });
+        await releaseClaim(lead.place_id); // free it up for retry on the next tick instead of sitting locked until the claim timeout
         // Previously swallowed entirely -- neither persisted nor surfaced, so a
         // sustained outage (bad creds, SES throttled) would silently no-op
         // forever with nothing to show for it. Now: a durable record + a

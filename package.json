@@ -8,7 +8,8 @@
     "dev": "nodemon server.js",
     "test": "jest --runInBand",
     "test:watch": "jest --watch",
-    "generate": "node generate-leads.js"
+    "generate": "node generate-leads.js",
+    "outreach:fallback": "node run-fallback-outreach.js"
   },
   "dependencies": {
     "@aws-sdk/client-sesv2": "^3.1098.0",

@@ -6,6 +6,7 @@ const logger = require('../utils/logger');
 
 const TABLE = 'leads';
 const LOGS_TABLE = 'outreach_logs';
+const HEALTH_TABLE = 'system_health';
 
 // ─── Leads ────────────────────────────────────────────────────────────────────
 
@@ -245,6 +246,8 @@ const STAGE_OFFSET_DAYS = { 2: 2, 3: 7, 4: 14 };
  */
 async function getEmailSequenceCandidates(limit = 20) {
   const db = getClient();
+  const claimTimeoutMinutes = parseInt(process.env.CLAIM_TIMEOUT_MINUTES || '10', 10);
+  const claimCutoff = new Date(Date.now() - claimTimeoutMinutes * 60000).toISOString();
   const { data, error } = await db
     .from(TABLE)
     .select('*')
@@ -252,6 +255,12 @@ async function getEmailSequenceCandidates(limit = 20) {
     .eq('email_stopped', false)
     .eq('email_replied', false)
     .eq('has_website', false)
+    // Excludes leads another worker currently holds a live claim on (see
+    // claimLeadForStage) -- not required for correctness (the atomic claim
+    // itself is what prevents a duplicate send), just avoids both workers
+    // wastefully generating AI copy for a lead one of them is already
+    // mid-send on.
+    .or(`email_claimed_at.is.null,email_claimed_at.lt.${claimCutoff}`)
     .order('prospect_score', { ascending: false })
     .order('created_at', { ascending: true })
     .limit(500); // pull a working set, then filter stage-due in JS below
@@ -286,18 +295,84 @@ async function getEmailSequenceCandidates(limit = 20) {
 
 /**
  * Record a successful stage send: bump email_stage, stamp last_sent, and
- * stamp first_sent on the very first (stage 1) send.
+ * stamp first_sent on the very first (stage 1) send. Also clears any claim
+ * held on this lead (see claimLeadForStage) -- once email_stage has moved
+ * past the claimed value, the claim is redundant (a future claim attempt at
+ * the old stage will fail on the stage check anyway), but clearing it here
+ * keeps system_health/debugging views honest about what's actually locked.
  */
 async function recordEmailStageSent(placeId, stage) {
   const db = getClient();
   const now = new Date().toISOString();
-  const updates = { email_stage: stage, email_last_sent_at: now };
+  const updates = { email_stage: stage, email_last_sent_at: now, email_claimed_at: null, email_claimed_by: null };
   if (stage === 1) updates.email_first_sent_at = now;
 
   const { error } = await db.from(TABLE).update(updates).eq('place_id', placeId);
   if (error) {
     logger.error('recordEmailStageSent failed', { placeId, message: error.message });
     throw error;
+  }
+}
+
+/**
+ * Atomic compare-and-swap claim: exactly one caller can ever hold the claim
+ * for a given lead at a given stage at a time, even across two entirely
+ * separate processes/machines (e.g. the Railway app and the GitHub-Actions
+ * fallback runner both calling emailSequence.runOnce() around the same
+ * moment) -- this is what makes cross-worker duplicate-send prevention
+ * actually safe, unlike an in-process mutex which only protects one process.
+ *
+ * Safe because a single `UPDATE ... WHERE ... RETURNING` is one atomic
+ * statement: Postgres serializes concurrent UPDATEs against the same row, so
+ * of two simultaneous claim attempts for the same (place_id, expectedStage),
+ * only one can ever see its WHERE clause still match and affect a row -- the
+ * loser's UPDATE simply matches zero rows once the winner's has committed.
+ *
+ * The claim expires after `claimTimeoutMinutes` (default from
+ * CLAIM_TIMEOUT_MINUTES, else 10) so a worker that crashes after claiming
+ * but before finishing (send + recordEmailStageSent, or a release on
+ * failure) doesn't block that lead forever -- the next tick, from either
+ * worker, can reclaim it once the timeout has passed.
+ *
+ * @returns {Promise<boolean>} true if this call won the claim
+ */
+async function claimLeadForStage(placeId, expectedStage, workerId, claimTimeoutMinutes) {
+  const db = getClient();
+  const timeoutMinutes = claimTimeoutMinutes || parseInt(process.env.CLAIM_TIMEOUT_MINUTES || '10', 10);
+  const cutoff = new Date(Date.now() - timeoutMinutes * 60000).toISOString();
+
+  const { data, error } = await db
+    .from(TABLE)
+    .update({ email_claimed_at: new Date().toISOString(), email_claimed_by: workerId || 'unknown' })
+    .eq('place_id', placeId)
+    .eq('email_stage', expectedStage)
+    .eq('email_replied', false)
+    .eq('email_stopped', false)
+    .or(`email_claimed_at.is.null,email_claimed_at.lt.${cutoff}`)
+    .select('id');
+
+  if (error) {
+    logger.error('claimLeadForStage failed', { placeId, expectedStage, message: error.message });
+    throw error;
+  }
+  return !!(data && data.length);
+}
+
+/**
+ * Release a claim without advancing the stage -- used when a send attempt
+ * fails, so the lead is immediately retryable on the next tick instead of
+ * sitting locked until the claim timeout passes. Best-effort: swallows its
+ * own errors (logged, not thrown) so a release failure can never mask the
+ * original send error it's being called alongside, or crash the caller's
+ * error-handling path.
+ */
+async function releaseClaim(placeId) {
+  try {
+    const db = getClient();
+    const { error } = await db.from(TABLE).update({ email_claimed_at: null, email_claimed_by: null }).eq('place_id', placeId);
+    if (error) throw error;
+  } catch (err) {
+    logger.error('releaseClaim failed', { placeId, message: err.message });
   }
 }
 
@@ -760,6 +835,89 @@ async function getExistingLeadIdentifiers() {
   return data || [];
 }
 
+// ─── Persistent health/heartbeat state (system_health) ─────────────────────────
+//
+// Replaces what used to be in-memory-only state (healthCheck.js's
+// `wasHealthy`, notify.js's `failureCounts` Map) with rows in Supabase, keyed
+// by an arbitrary component name -- so a Railway restart/redeploy (or the
+// fact that the fallback runner is a fresh process every single invocation)
+// can't reset an alert streak or a scheduler's last-successful-run timestamp
+// back to "unknown". The database is the only thing both workers, and every
+// incarnation of either, actually share.
+
+/**
+ * Upsert a component as healthy: resets its failure streak and stamps
+ * last_ok_at. Used both for pass/fail health probes (DB, IMAP mailboxes) and
+ * as a scheduler heartbeat (called once per successful tick, regardless of
+ * whether that tick actually sent anything -- "the scheduler ran" is the
+ * signal, not "it sent an email", since a no-op tick due to the daily cap or
+ * min-gap is entirely normal).
+ */
+async function recordHealthSuccess(component) {
+  const db = getClient();
+  const now = new Date().toISOString();
+  const { error } = await db
+    .from(HEALTH_TABLE)
+    .upsert({ component, status: 'ok', fail_count: 0, last_ok_at: now, updated_at: now }, { onConflict: 'component' });
+  if (error) {
+    logger.error('recordHealthSuccess failed', { component, message: error.message });
+    throw error;
+  }
+}
+
+/**
+ * Upsert a component as failing: bumps its consecutive-failure count and
+ * returns the new count, so callers (notify.js) can decide whether this
+ * particular failure is one worth alerting on (first occurrence, then every
+ * Nth) without keeping that counter in process memory. Read-then-write (not
+ * a single atomic increment) -- acceptable here since this only throttles a
+ * notification, unlike claimLeadForStage where a race would mean a real
+ * duplicate send.
+ */
+async function recordHealthFailure(component, errorMessage) {
+  const db = getClient();
+  const now = new Date().toISOString();
+  const { data: existing } = await db.from(HEALTH_TABLE).select('fail_count').eq('component', component).limit(1);
+  const nextCount = (existing && existing[0]?.fail_count ? existing[0].fail_count : 0) + 1;
+
+  const { error } = await db
+    .from(HEALTH_TABLE)
+    .upsert(
+      { component, status: 'error', fail_count: nextCount, last_error: errorMessage || null, last_error_at: now, updated_at: now },
+      { onConflict: 'component' }
+    );
+  if (error) {
+    logger.error('recordHealthFailure failed', { component, message: error.message });
+    throw error;
+  }
+  return nextCount;
+}
+
+/** Fetch one component's health row (null if it has never reported). */
+async function getHealthComponent(component) {
+  const db = getClient();
+  const { data, error } = await db.from(HEALTH_TABLE).select('*').eq('component', component).limit(1);
+  if (error) {
+    logger.error('getHealthComponent failed', { component, message: error.message });
+    throw error;
+  }
+  return data && data.length ? data[0] : null;
+}
+
+/** Fetch several components' health rows at once, keyed by component name. */
+async function getHealthComponents(components) {
+  if (!components.length) return {};
+  const db = getClient();
+  const { data, error } = await db.from(HEALTH_TABLE).select('*').in('component', components);
+  if (error) {
+    logger.error('getHealthComponents failed', { message: error.message });
+    throw error;
+  }
+  const byComponent = {};
+  for (const row of data || []) byComponent[row.component] = row;
+  return byComponent;
+}
+
 module.exports = {
   upsertLeads,
   getLeads,
@@ -773,6 +931,8 @@ module.exports = {
   updateWebPresence,
   getEmailSequenceCandidates,
   recordEmailStageSent,
+  claimLeadForStage,
+  releaseClaim,
   setEmailFlag,
   stopEmailByAddress,
   countEmailSendsToday,
@@ -792,4 +952,8 @@ module.exports = {
   getRecentSearchHistory,
   recordSearchHistory,
   getExistingLeadIdentifiers,
+  recordHealthSuccess,
+  recordHealthFailure,
+  getHealthComponent,
+  getHealthComponents,
 };

@@ -254,7 +254,12 @@ async function getEmailSequenceCandidates(limit = 20) {
     .not('email', 'is', null)
     .eq('email_stopped', false)
     .eq('email_replied', false)
-    .eq('has_website', false)
+    // Primary pool is no-website discovery leads, but source='apollo_import'
+    // leads (manually imported, already have a real website -- a different
+    // acquisition channel, not a pipeline change) are also eligible: the live
+    // pitch is missed-calls/AI-receptionist, which never references website
+    // status, so it applies regardless of has_website.
+    .or('has_website.eq.false,source.eq.apollo_import')
     // Excludes leads another worker currently holds a live claim on (see
     // claimLeadForStage) -- not required for correctness (the atomic claim
     // itself is what prevents a duplicate send), just avoids both workers

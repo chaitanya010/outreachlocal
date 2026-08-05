@@ -33,14 +33,14 @@ async function tick() {
         `Today's run searched ${result.pairs} (niche, city) pairs, found ${result.rawCandidates} raw candidates, but stored 0 new leads. Could mean an API key expired/hit quota, or dedup/filtering is too aggressive.\n\nFull summary: ${JSON.stringify(result)}`
       );
     } else if (result.stored > 0) {
-      resetFailureStreak('discovery_zero_yield');
+      await resetFailureStreak('discovery_zero_yield');
     }
   } catch (err) {
     logger.error('Discovery cron tick failed', { message: err.message });
     await notifyOnRecurringFailure('discovery_cron_crash', 'OutreachLocal: discovery cron crashed', err.message);
     return;
   }
-  resetFailureStreak('discovery_cron_crash');
+  await resetFailureStreak('discovery_cron_crash');
 }
 
 function start() {

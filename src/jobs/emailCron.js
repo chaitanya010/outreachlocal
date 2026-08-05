@@ -15,7 +15,7 @@
 
 const cron = require('node-cron');
 const emailSequence = require('../services/emailSequence');
-const { getLeadsMissingEmail, updateEnrichment } = require('../db/leadsRepository');
+const { getLeadsMissingEmail, updateEnrichment, recordHealthSuccess } = require('../db/leadsRepository');
 const { enrichBatch } = require('../services/enrichmentService');
 const { notifyOnRecurringFailure, resetFailureStreak } = require('../utils/notify');
 const logger = require('../utils/logger');
@@ -31,13 +31,21 @@ let enrichTask = null;
 
 async function tick() {
   try {
-    const result = await emailSequence.runOnce();
+    const result = await emailSequence.runOnce({ workerId: 'railway' });
     if (result.sent) {
       logger.info('Email cron tick: sent', result);
     } else {
       logger.info('Email cron tick: no-op', result);
     }
-    resetFailureStreak('email_cron_tick');
+    await resetFailureStreak('email_cron_tick');
+    // Heartbeat: "the scheduler executed this cycle", independent of whether
+    // it actually sent anything -- a no-op tick (daily cap, min-gap, nothing
+    // due) is normal and shouldn't look like an outage. Read by
+    // healthCheck.js to detect a stopped scheduler even across restarts,
+    // and by the GitHub-Actions fallback runner's own staleness logic isn't
+    // needed since it heartbeats itself the same way (see
+    // scripts/fallbackOutreachRun.js) under 'scheduler:github-fallback'.
+    await recordHealthSuccess('scheduler:railway');
   } catch (err) {
     // runOnce() already catches send failures internally (see
     // emailSequence.js) -- reaching here means something more fundamental
@@ -62,7 +70,7 @@ async function enrichTick() {
     }
     const result = await enrichBatch(leads, updateEnrichment);
     logger.info('Email cron enrich tick: done', { candidates: leads.length, ...result });
-    resetFailureStreak('email_cron_enrich');
+    await resetFailureStreak('email_cron_enrich');
   } catch (err) {
     logger.error('Email cron enrich tick failed', { message: err.message });
     await notifyOnRecurringFailure('email_cron_enrich', 'OutreachLocal: email enrich tick crashed', err.message);

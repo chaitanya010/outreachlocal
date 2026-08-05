@@ -98,6 +98,26 @@ router.get('/outreach/email/stats', async (req, res) => {
   }
 });
 
+// ─── GET /outreach/health ───────────────────────────────────────────────────────
+/**
+ * Admin: on-demand version of healthCheck.js's periodic checks (Supabase
+ * reachable, each sender-pool mailbox's IMAP login) -- read-only, no email is
+ * ever sent as part of this. Exists so misconfigured env vars (missing/wrong
+ * AWS/mailbox credentials, etc.) can be confirmed immediately on request
+ * rather than waiting up to HEALTHCHECK_TICK_HOURS for the next scheduled
+ * check.
+ */
+router.get('/outreach/health', async (req, res) => {
+  if (!isAdmin(req)) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const { runChecks } = require('../jobs/healthCheck');
+    const problems = await runChecks();
+    return res.json({ ok: true, healthy: problems.length === 0, problems });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── GET /outreach/email/performance ────────────────────────────────────────────
 /**
  * Reply-rate breakdown by subject-line variant, pain-point angle, and stage —

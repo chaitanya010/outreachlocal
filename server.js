@@ -9,6 +9,7 @@ const outreachRouter = require('./src/routes/outreach');
 const emailSequenceRouter = require('./src/routes/emailSequence');
 const discoveryRouter = require('./src/routes/discovery');
 const sesWebhookRouter = require('./src/routes/sesWebhook');
+const dashboardEmailsRouter = require('./src/routes/dashboardEmails');
 const logger = require('./src/utils/logger');
 const { notifyOwner } = require('./src/utils/notify');
 
@@ -74,6 +75,7 @@ app.use('/', outreachRouter);
 app.use('/', emailSequenceRouter);
 app.use('/', discoveryRouter);
 app.use('/', sesWebhookRouter);
+app.use('/', dashboardEmailsRouter);
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 

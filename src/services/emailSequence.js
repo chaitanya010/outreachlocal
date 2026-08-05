@@ -61,11 +61,20 @@ const { sendEmail } = require('./emailService');
 const { notifyOnRecurringFailure, resetFailureStreak } = require('../utils/notify');
 const logger = require('../utils/logger');
 
-// Overall safety valve on total sequence volume/day (new + follow-ups),
-// across all senders combined.
-const DAILY_CAP = parseInt(process.env.EMAIL_DAILY_CAP || '30', 10);
-const MIN_GAP_MINUTES = parseInt(process.env.EMAIL_MIN_GAP_MINUTES || '20', 10);
+// Hard outer ceiling on total sequence volume/day (new + follow-ups), across
+// all senders combined -- deliberately set well above the highest possible
+// warmup-derived total (5 mailboxes x 15/day fully warmed = 75) so it only
+// ever binds if someone explicitly lowers EMAIL_DAILY_CAP to intentionally
+// throttle below the ramp, not as the everyday driver (see computeDailyCap).
+const DAILY_CAP_CEILING = parseInt(process.env.EMAIL_DAILY_CAP || '100', 10);
+// Absolute floor on time between sends, regardless of how much daily budget
+// remains -- prevents the adaptive pacing below from ever bursting sends
+// back-to-back even if the day's cap is large and time is short.
+const MIN_GAP_MINUTES = parseInt(process.env.EMAIL_MIN_GAP_MINUTES || '5', 10);
 const MAX_JITTER_MINUTES = 45;
+const BUSINESS_HOUR_START = parseInt(process.env.EMAIL_BUSINESS_HOUR_START || '9', 10);
+const BUSINESS_HOUR_END = parseInt(process.env.EMAIL_BUSINESS_HOUR_END || '17', 10);
+const CRON_TIMEZONE = process.env.CRON_TIMEZONE || 'America/New_York';
 
 // ─── Sender pool (multi-mailbox rotation) ──────────────────────────────────────
 
@@ -115,6 +124,50 @@ function warmupCapFor(firstSendISO) {
     if (daysSince >= step.afterDays) cap = step.cap;
   }
   return Math.min(cap, PER_SENDER_NEW_LEADS_PER_DAY);
+}
+
+/**
+ * Today's total daily cap = sum of every mailbox's own warmup-adjusted cap
+ * (see warmupCapFor), so total volume automatically ramps 25 -> 50 -> 75 as
+ * the 5-mailbox pool ages, instead of a fixed number that ignores how many
+ * mailboxes are actually warmed up. Still bounded by DAILY_CAP_CEILING as an
+ * explicit safety valve.
+ */
+async function computeDailyCap() {
+  if (!SENDER_POOL.length) return DAILY_CAP_CEILING;
+  const firstSends = await getSenderFirstSendDates();
+  const warmupTotal = SENDER_POOL.reduce((sum, s) => sum + warmupCapFor(firstSends[s]), 0);
+  return Math.min(warmupTotal, DAILY_CAP_CEILING);
+}
+
+/** Minutes remaining today until BUSINESS_HOUR_END, in CRON_TIMEZONE (0 if already past). */
+function minutesUntilWindowCloses(now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: CRON_TIMEZONE,
+    hour: 'numeric',
+    minute: 'numeric',
+    hourCycle: 'h23',
+  }).formatToParts(now);
+  const hour = parseInt(parts.find((p) => p.type === 'hour').value, 10);
+  const minute = parseInt(parts.find((p) => p.type === 'minute').value, 10);
+  const nowMinutes = hour * 60 + minute;
+  const closeMinutes = BUSINESS_HOUR_END * 60;
+  return Math.max(closeMinutes - nowMinutes, 0);
+}
+
+/**
+ * Adaptive target gap: spreads however many sends remain today evenly across
+ * however much of the business-hours window is left, recomputed every call.
+ * This is what actually makes computeDailyCap's ramp reachable -- a fixed gap
+ * (the old behavior) capped total output at ~11-12/day regardless of how high
+ * the daily cap climbed. Self-correcting: if a send is late, the shrinking
+ * window vs. unchanged remaining-sends count naturally shortens the next
+ * required gap to catch up, rather than needing to hit every slot exactly.
+ * Floors at minGapMinutes so it never bursts sends back-to-back.
+ */
+function computeRequiredGap(remainingSends, remainingWindowMinutes, minGapMinutes) {
+  if (remainingSends <= 0 || remainingWindowMinutes <= 0) return minGapMinutes;
+  return Math.max(remainingWindowMinutes / remainingSends, minGapMinutes);
 }
 
 /**
@@ -204,26 +257,39 @@ async function peekNextCandidate() {
 let runInProgress = false;
 
 /**
- * Run one drip cycle: enforce the overall daily cap + min gap, then send at
- * most one email — a due follow-up if one exists, otherwise a fresh intro
- * (skipped once every mailbox in the pool has hit its own per-sender cap).
+ * Run one drip cycle: enforce the overall daily cap + an adaptive min gap,
+ * then send at most one email — a due follow-up if one exists, otherwise a
+ * fresh intro (skipped once every mailbox in the pool has hit its own
+ * per-sender cap). dailyCap defaults to the warmup-derived total
+ * (computeDailyCap) rather than a fixed number, so it ramps automatically as
+ * mailboxes age; minGapMinutes is the pacing floor, not the target -- the
+ * actual target gap adapts to how much of today's cap and business-hours
+ * window remain (see computeRequiredGap).
  */
-async function runOnce({ dailyCap = DAILY_CAP, minGapMinutes = MIN_GAP_MINUTES, workerId = process.env.WORKER_ID || 'railway' } = {}) {
+async function runOnce({ dailyCap, minGapMinutes = MIN_GAP_MINUTES, workerId = process.env.WORKER_ID || 'railway' } = {}) {
   if (runInProgress) {
     return { sent: false, reason: 'run_already_in_progress' };
   }
   runInProgress = true;
   try {
+    const effectiveDailyCap = dailyCap ?? (await computeDailyCap());
     const sentToday = await countEmailSendsToday();
-    if (sentToday >= dailyCap) {
-      return { sent: false, reason: 'daily_cap_reached', sentToday, dailyCap };
+    if (sentToday >= effectiveDailyCap) {
+      return { sent: false, reason: 'daily_cap_reached', sentToday, dailyCap: effectiveDailyCap };
     }
 
     const lastSentAt = await getLastEmailSendTime();
     if (lastSentAt) {
+      const remainingSends = effectiveDailyCap - sentToday;
+      const remainingWindowMinutes = minutesUntilWindowCloses();
+      const targetGap = computeRequiredGap(remainingSends, remainingWindowMinutes, minGapMinutes);
+      // Jitter scales with the target gap itself (capped at MAX_JITTER_MINUTES)
+      // so a small adaptive gap late in a busy day isn't swamped by up to 45min
+      // of jitter -- keeps the send pattern non-robotic without undermining the
+      // pacing that makes the daily cap reachable.
+      const jitter = Math.random() * Math.min(MAX_JITTER_MINUTES, targetGap * 0.5);
+      const requiredGap = targetGap + jitter;
       const minutesSince = (Date.now() - Date.parse(lastSentAt)) / 60000;
-      const jitter = Math.random() * MAX_JITTER_MINUTES;
-      const requiredGap = minGapMinutes + jitter;
       if (minutesSince < requiredGap) {
         return { sent: false, reason: 'min_gap_not_elapsed', minutesSince: Math.round(minutesSince), requiredGap: Math.round(requiredGap) };
       }

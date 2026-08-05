@@ -27,6 +27,24 @@ const PAIRS_PER_RUN = parseInt(process.env.DISCOVERY_PAIRS_PER_RUN || '8', 10);
 const SCORE_BUFFER = parseInt(process.env.DISCOVERY_SCORE_BUFFER || '25', 10); // candidates carried into email enrichment
 const TOP_N = parseInt(process.env.DISCOVERY_TOP_N || '10', 10);
 
+// Cap on how many *with-website* candidates get the expensive per-site fetch
+// in stage 4 (each is a live HTTP request to that business's own site, up to
+// an 8s timeout). No-website candidates are exempt -- they skip the fetch
+// entirely (see below) and are the primary target for this business anyway,
+// so there's no reason to cap them. Without this, raising PAIRS_PER_RUN scales
+// deduped-candidate count directly into thousands of sequential site fetches,
+// even though only SCORE_BUFFER of them ever survive to matter downstream.
+const ANALYSIS_BUFFER = parseInt(process.env.DISCOVERY_ANALYSIS_BUFFER || '400', 10);
+
+/** Fisher-Yates shuffle, in place. */
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
 /**
  * @returns {Promise<{ pairs: number, rawCandidates: number, deduped: number, scored: number, emailed: number, stored: number }>}
  */
@@ -55,9 +73,22 @@ async function runDailyDiscovery() {
   const deduped = dedupeCandidates(rawCandidates, existing).filter(isLikelyRealBusiness);
   logger.info('discoveryPipeline: after dedupe + institutional filter', { deduped: deduped.length });
 
-  // Stage 4: site-quality analysis + scoring (fetch each candidate's site once)
+  // Stage 4: site-quality analysis + scoring (fetch each candidate's site once).
+  // No-website candidates are free (no fetch) and always kept; with-website
+  // candidates are shuffled (so the cap samples fairly across every searched
+  // pair, not just whichever ones deduped first) then capped at
+  // ANALYSIS_BUFFER before the expensive fetch.
+  const noWebsite = deduped.filter((c) => !c.website);
+  const withWebsite = shuffle(deduped.filter((c) => c.website)).slice(0, ANALYSIS_BUFFER);
+  const forAnalysis = [...noWebsite, ...withWebsite];
+  logger.info('discoveryPipeline: analysis buffer applied', {
+    deduped: deduped.length,
+    noWebsite: noWebsite.length,
+    withWebsiteAnalyzed: withWebsite.length,
+  });
+
   const scored = [];
-  for (const candidate of deduped) {
+  for (const candidate of forAnalysis) {
     const niche = getNicheByLabel(candidate.business_type);
     let siteSignals = null;
     let baseHtml = null;

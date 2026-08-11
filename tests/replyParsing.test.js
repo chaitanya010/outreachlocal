@@ -1,4 +1,4 @@
-const { parseInboundMessage, isAutoSubmitted, stripQuotedReply } = require('../src/utils/replyParsing');
+const { parseInboundMessage, isAutoSubmitted, isBounceNotification, stripQuotedReply } = require('../src/utils/replyParsing');
 
 describe('isAutoSubmitted', () => {
   test('detects Auto-Submitted: auto-replied header', () => {
@@ -26,6 +26,29 @@ describe('isAutoSubmitted', () => {
   test('handles missing/malformed headers gracefully', () => {
     expect(isAutoSubmitted(null, 'Re: quick question')).toBe(false);
     expect(isAutoSubmitted(undefined, undefined)).toBe(false);
+  });
+});
+
+describe('isBounceNotification', () => {
+  test('detects bounce-pattern subjects', () => {
+    expect(isBounceNotification(new Map(), 'Undeliverable: quick question')).toBe(true);
+    expect(isBounceNotification(new Map(), 'Delivery Status Notification (Failure)')).toBe(true);
+    expect(isBounceNotification(new Map(), 'Mail delivery failed: returning message to sender')).toBe(true);
+    expect(isBounceNotification(new Map(), 'Returned mail: see transcript for details')).toBe(true);
+  });
+
+  test('does not flag an OOO autoresponder as a bounce', () => {
+    expect(isBounceNotification(new Map(), 'Out of Office: back Monday')).toBe(false);
+    expect(isBounceNotification(new Map(), 'Automatic reply: away until further notice')).toBe(false);
+  });
+
+  test('detects RFC 3464 multipart/report content-type as a bounce regardless of subject', () => {
+    const headers = new Map([['content-type', { value: 'multipart/report', params: { 'report-type': 'delivery-status' } }]]);
+    expect(isBounceNotification(headers, 'Re: quick question')).toBe(true);
+  });
+
+  test('does not flag a normal reply as a bounce', () => {
+    expect(isBounceNotification(new Map(), 'Re: quick question')).toBe(false);
   });
 });
 

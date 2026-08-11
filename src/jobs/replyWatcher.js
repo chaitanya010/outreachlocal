@@ -58,7 +58,7 @@ const {
 const { senderNameFor } = require('../services/emailSequence');
 const { sendEmail } = require('../services/emailService');
 const { getDeckAttachment } = require('../utils/deckAttachment');
-const { parseInboundMessage, isAutoSubmitted, stripQuotedReply } = require('../utils/replyParsing');
+const { parseInboundMessage, isAutoSubmitted, isBounceNotification, stripQuotedReply } = require('../utils/replyParsing');
 const { notifyOwner } = require('../utils/notify');
 const logger = require('../utils/logger');
 
@@ -106,9 +106,30 @@ async function handleDecoyReply(lead, senderEmail, fromAddress, envelope, rawSou
   const intent = isAutoSubmitted(inboundHeaders, subject) ? 'auto_reply' : await classifyReply(replyText, subject);
 
   if (intent === 'auto_reply') {
-    // Not a real reply (OOO/autoresponder/bounce-like) -- log for dedup +
-    // visibility only. Lead stays in the decoy stage untouched, so a genuine
-    // reply later still triggers the pivot normally.
+    if (isBounceNotification(inboundHeaders, subject)) {
+      // A delivery-failure signal arriving as a same-address reply (mailbox
+      // full and staying that way, "no longer with this company", etc.) --
+      // SES's own bounce webhook (routes/sesWebhook.js) is the primary path
+      // for real hard bounces, but this catches the narrower case where SES
+      // still delivered the message yet the address itself indicates it
+      // won't be effectively read. Suppress the same way a bounce or
+      // opt-out does -- never retry it.
+      logger.info('replyWatcher: bounce-pattern reply, suppressing', { place_id: lead.place_id, sender: senderEmail, from: fromAddress });
+      await logOutreach({
+        leadId: lead.id,
+        placeId: lead.place_id,
+        channel: 'email_reply',
+        status: 'received',
+        message: subject || '',
+        provider_id: inboundMessageId,
+      });
+      await setEmailFlag(lead.place_id, 'stopped');
+      await suppressEmailAddress(fromAddress, 'reply_bounce_pattern');
+      return;
+    }
+    // Not a real reply (OOO/autoresponder) -- log for dedup + visibility
+    // only. Lead stays in the decoy stage untouched, so a genuine reply
+    // later still triggers the pivot normally.
     logger.info('replyWatcher: auto-reply ignored', { place_id: lead.place_id, sender: senderEmail, from: fromAddress });
     await logOutreach({
       leadId: lead.id,
@@ -192,6 +213,20 @@ async function handlePostPivotReply(lead, senderEmail, fromAddress, envelope, ra
   const intent = isAutoSubmitted(inboundHeaders, subject) ? 'auto_reply' : await classifyPostPivotReply(replyText, subject);
 
   if (intent === 'auto_reply') {
+    if (isBounceNotification(inboundHeaders, subject)) {
+      logger.info('replyWatcher: post-pivot bounce-pattern reply, suppressing', { place_id: lead.place_id, sender: senderEmail, from: fromAddress });
+      await logOutreach({
+        leadId: lead.id,
+        placeId: lead.place_id,
+        channel: 'email_reply',
+        status: 'received',
+        message: subject || '',
+        provider_id: inboundMessageId,
+      });
+      await setEmailFlag(lead.place_id, 'stopped');
+      await suppressEmailAddress(fromAddress, 'reply_bounce_pattern');
+      return;
+    }
     // Not a real reply -- lead stays awaiting booking untouched, so a
     // genuine reply later still triggers the booking email normally.
     logger.info('replyWatcher: post-pivot auto-reply ignored', { place_id: lead.place_id, sender: senderEmail, from: fromAddress });

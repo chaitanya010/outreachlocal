@@ -23,10 +23,37 @@ async function parseInboundMessage(rawSource) {
   };
 }
 
-// Common auto-reply / OOO / delivery-failure signals. Auto-Submitted is the
-// standards-based signal (RFC 3834) and takes priority; the subject regex is
-// a fallback for autoresponders that don't set it (common in practice).
-const AUTO_SUBJECT_RE = /^(auto[- ]?reply|out of office|automatic reply|undeliverable|delivery status notification|automatisch|abwesenheit)/i;
+// Vacation/OOO autoresponders -- the address is still valid, the person is
+// just away, so these should be ignored (not suppressed).
+const OOO_SUBJECT_RE = /^(auto[- ]?reply|out of office|automatic reply|automatisch|abwesenheit)/i;
+
+// Delivery-failure signals -- distinct from OOO because these mean the
+// address is dead (or the mailbox owner is saying it's no longer read) and
+// must never be retried. The primary, authoritative bounce path is SES's own
+// async bounce notification via SNS (see routes/sesWebhook.js), which is
+// what actually fires for most real hard bounces since SES rejects delivery
+// mailbox-side, not via a reply landing in our own inbox. This is a backup
+// signal for the narrower case where a same-address auto-response itself
+// indicates the address won't be effectively read (mailbox full and staying
+// that way, "no longer with this company", forwarding notices, etc.) --
+// something SES's own bounce feedback wouldn't catch since SES still
+// successfully delivered the message.
+const BOUNCE_SUBJECT_RE = /^(undeliverable|delivery status notification|mail delivery failed|returned mail|failure notice|delivery has failed|message (could not be delivered|was not delivered|delayed))/i;
+
+/**
+ * @param {Map} headers  parsed message headers (mailparser Map)
+ * @param {string} subject
+ * @returns {boolean}
+ */
+function isBounceNotification(headers, subject = '') {
+  const contentType = headers && typeof headers.get === 'function' ? headers.get('content-type') : null;
+  const contentTypeValue = contentType && typeof contentType === 'object' ? contentType.value : contentType;
+  if (contentTypeValue && /multipart\/report/i.test(String(contentTypeValue))) {
+    const reportType = contentType.params && contentType.params['report-type'];
+    if (!reportType || /delivery-status/i.test(reportType)) return true;
+  }
+  return BOUNCE_SUBJECT_RE.test((subject || '').trim());
+}
 
 /**
  * @param {Map} headers  parsed message headers (mailparser Map)
@@ -36,7 +63,8 @@ const AUTO_SUBJECT_RE = /^(auto[- ]?reply|out of office|automatic reply|undelive
 function isAutoSubmitted(headers, subject = '') {
   const autoSubmitted = headers && typeof headers.get === 'function' ? headers.get('auto-submitted') : null;
   if (autoSubmitted && String(autoSubmitted).toLowerCase() !== 'no') return true;
-  if (AUTO_SUBJECT_RE.test((subject || '').trim())) return true;
+  if (isBounceNotification(headers, subject)) return true;
+  if (OOO_SUBJECT_RE.test((subject || '').trim())) return true;
   return false;
 }
 
@@ -57,4 +85,4 @@ function stripQuotedReply(text) {
   return body.trim();
 }
 
-module.exports = { parseInboundMessage, isAutoSubmitted, stripQuotedReply };
+module.exports = { parseInboundMessage, isAutoSubmitted, isBounceNotification, stripQuotedReply };

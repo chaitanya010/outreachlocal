@@ -1,17 +1,32 @@
 'use strict';
 
 /**
- * Curated list of mid/large US cities used for geographic rotation.
+ * Curated list of mid/large cities used for geographic rotation, across the
+ * US plus other major English-speaking markets (UK, Australia, Canada,
+ * Ireland, New Zealand) -- same language for the cold-email copy, same
+ * general SMB-outreach playbook.
  *
  * Google Places Text Search operates at city granularity (a "state > county
- * > city > ZIP" random-walk, as originally requested, isn't something the
- * API can usefully target — ZIP-level text search just re-finds the same
- * city's results). So rotation here is state -> city: enough spread across
- * all 50 states to avoid over-mining any one metro, while staying at a
- * granularity the discovery sources can actually query.
+ * > city > ZIP" random-walk isn't something the API can usefully target --
+ * ZIP-level text search just re-finds the same city's results). So rotation
+ * here is region -> city: enough spread to avoid over-mining any one metro,
+ * while staying at a granularity the discovery sources can actually query.
+ *
+ * Non-US entries bake the country directly into `city` (e.g. "Manchester,
+ * UK") rather than adding a separate query parameter. Two reasons: (1) the
+ * discovery sources (googlePlacesSource, yelpSource, bestOfCitySource) all
+ * take a single `city` string and pass it straight into a text query --
+ * without a country hint, "spa in Manchester" or "spa in Cambridge" is
+ * genuinely ambiguous against the equivalent US city of the same name; (2)
+ * that same string is what ends up stored as the lead's `city` column, so
+ * baking the country in there also makes stored leads self-describing on
+ * the dashboard. US entries are left exactly as before (bare city name, no
+ * ", USA" suffix) -- they've been unambiguous in practice and changing the
+ * format would touch how ~13k already-searched pairs and existing stored
+ * leads read, for zero benefit.
  */
 
-const CITIES = [
+const US_CITIES = [
   { city: 'New York', state: 'NY' }, { city: 'Buffalo', state: 'NY' }, { city: 'Rochester', state: 'NY' },
   { city: 'Los Angeles', state: 'CA' }, { city: 'San Diego', state: 'CA' }, { city: 'San Francisco', state: 'CA' },
   { city: 'Sacramento', state: 'CA' }, { city: 'Fresno', state: 'CA' }, { city: 'Oakland', state: 'CA' },
@@ -54,12 +69,69 @@ const CITIES = [
   { city: 'Billings', state: 'MT' }, { city: 'Fargo', state: 'ND' }, { city: 'Sioux Falls', state: 'SD' },
   { city: 'Cheyenne', state: 'WY' }, { city: 'Newark', state: 'NJ' }, { city: 'Jersey City', state: 'NJ' },
   { city: 'Trenton', state: 'NJ' },
+].map((c) => ({ ...c, country: 'United States' }));
+
+const UK_CITIES = [
+  { city: 'London, UK', state: 'England' }, { city: 'Manchester, UK', state: 'England' },
+  { city: 'Birmingham, UK', state: 'England' }, { city: 'Leeds, UK', state: 'England' },
+  { city: 'Glasgow, UK', state: 'Scotland' }, { city: 'Liverpool, UK', state: 'England' },
+  { city: 'Bristol, UK', state: 'England' }, { city: 'Sheffield, UK', state: 'England' },
+  { city: 'Edinburgh, UK', state: 'Scotland' }, { city: 'Newcastle, UK', state: 'England' },
+  { city: 'Nottingham, UK', state: 'England' }, { city: 'Cardiff, UK', state: 'Wales' },
+  { city: 'Belfast, UK', state: 'Northern Ireland' }, { city: 'Leicester, UK', state: 'England' },
+  { city: 'Coventry, UK', state: 'England' }, { city: 'Bradford, UK', state: 'England' },
+  { city: 'Southampton, UK', state: 'England' }, { city: 'Portsmouth, UK', state: 'England' },
+  { city: 'Aberdeen, UK', state: 'Scotland' }, { city: 'Reading, UK', state: 'England' },
+  { city: 'Brighton, UK', state: 'England' }, { city: 'Plymouth, UK', state: 'England' },
+  { city: 'Derby, UK', state: 'England' }, { city: 'Oxford, UK', state: 'England' },
+  { city: 'Cambridge, UK', state: 'England' }, { city: 'York, UK', state: 'England' },
+  { city: 'Swansea, UK', state: 'Wales' }, { city: 'Norwich, UK', state: 'England' },
+  { city: 'Exeter, UK', state: 'England' }, { city: 'Bath, UK', state: 'England' },
+].map((c) => ({ ...c, country: 'United Kingdom' }));
+
+const AU_CITIES = [
+  { city: 'Sydney, Australia', state: 'NSW' }, { city: 'Melbourne, Australia', state: 'VIC' },
+  { city: 'Brisbane, Australia', state: 'QLD' }, { city: 'Perth, Australia', state: 'WA' },
+  { city: 'Adelaide, Australia', state: 'SA' }, { city: 'Gold Coast, Australia', state: 'QLD' },
+  { city: 'Canberra, Australia', state: 'ACT' }, { city: 'Newcastle, Australia', state: 'NSW' },
+  { city: 'Wollongong, Australia', state: 'NSW' }, { city: 'Hobart, Australia', state: 'TAS' },
+  { city: 'Geelong, Australia', state: 'VIC' }, { city: 'Townsville, Australia', state: 'QLD' },
+  { city: 'Cairns, Australia', state: 'QLD' }, { city: 'Darwin, Australia', state: 'NT' },
+  { city: 'Toowoomba, Australia', state: 'QLD' }, { city: 'Ballarat, Australia', state: 'VIC' },
+  { city: 'Bendigo, Australia', state: 'VIC' }, { city: 'Launceston, Australia', state: 'TAS' },
+].map((c) => ({ ...c, country: 'Australia' }));
+
+const CA_CITIES = [
+  { city: 'Toronto, Canada', state: 'ON' }, { city: 'Montreal, Canada', state: 'QC' },
+  { city: 'Vancouver, Canada', state: 'BC' }, { city: 'Calgary, Canada', state: 'AB' },
+  { city: 'Edmonton, Canada', state: 'AB' }, { city: 'Ottawa, Canada', state: 'ON' },
+  { city: 'Winnipeg, Canada', state: 'MB' }, { city: 'Quebec City, Canada', state: 'QC' },
+  { city: 'Hamilton, Canada', state: 'ON' }, { city: 'Kitchener, Canada', state: 'ON' },
+  { city: 'London, Canada', state: 'ON' }, { city: 'Halifax, Canada', state: 'NS' },
+  { city: 'Victoria, Canada', state: 'BC' }, { city: 'Saskatoon, Canada', state: 'SK' },
+  { city: 'Regina, Canada', state: 'SK' },
+].map((c) => ({ ...c, country: 'Canada' }));
+
+const IE_CITIES = [
+  { city: 'Dublin, Ireland', state: 'Dublin' }, { city: 'Cork, Ireland', state: 'Cork' },
+  { city: 'Galway, Ireland', state: 'Galway' }, { city: 'Limerick, Ireland', state: 'Limerick' },
+  { city: 'Waterford, Ireland', state: 'Waterford' }, { city: 'Kilkenny, Ireland', state: 'Kilkenny' },
+].map((c) => ({ ...c, country: 'Ireland' }));
+
+const NZ_CITIES = [
+  { city: 'Auckland, New Zealand', state: 'Auckland' }, { city: 'Wellington, New Zealand', state: 'Wellington' },
+  { city: 'Christchurch, New Zealand', state: 'Canterbury' }, { city: 'Hamilton, New Zealand', state: 'Waikato' },
+  { city: 'Tauranga, New Zealand', state: 'Bay of Plenty' }, { city: 'Dunedin, New Zealand', state: 'Otago' },
+].map((c) => ({ ...c, country: 'New Zealand' }));
+
+const CITIES = [
+  ...US_CITIES, ...UK_CITIES, ...AU_CITIES, ...CA_CITIES, ...IE_CITIES, ...NZ_CITIES,
 ];
 
-// Defensive de-dup (a couple of cities legitimately share a name across
-// different states, e.g. Rochester NY / Rochester MN -- those are kept;
-// only exact city+state repeats are collapsed).
-const UNIQUE_CITIES = [...new Map(CITIES.map((c) => [`${c.city}|${c.state}`, c])).values()];
+// Defensive de-dup, keyed on city+state+country so legitimate same-name
+// cities in different regions/countries (Rochester NY/MN, London UK/Canada,
+// Hamilton Canada/NZ) are all kept; only exact repeats collapse.
+const UNIQUE_CITIES = [...new Map(CITIES.map((c) => [`${c.city}|${c.state}|${c.country}`, c])).values()];
 
 function getCities() {
   return UNIQUE_CITIES;

@@ -790,22 +790,25 @@ async function getEmailPerformanceStats() {
 const SEARCH_HISTORY_TABLE = 'search_history';
 
 /**
- * (niche, city) pairs searched within the last `days` days, as "niche|city"
- * keys — used by rotation.js to exclude recently-mined pairs from today's pick.
+ * (niche, city, state) pairs searched within the last `days` days, as
+ * "niche|city|state" keys — used by rotation.js to exclude recently-mined
+ * pairs from today's pick. `state` is included so same-named cities in
+ * different regions (Portland OR vs Portland ME, Rochester NY vs Rochester
+ * MN) don't share one cooldown clock.
  */
 async function getRecentSearchHistory(days = 180) {
   const db = getClient();
   const since = new Date(Date.now() - days * 86400000).toISOString();
   const { data, error } = await db
     .from(SEARCH_HISTORY_TABLE)
-    .select('niche, city')
+    .select('niche, city, state')
     .gte('searched_at', since);
 
   if (error) {
     logger.error('getRecentSearchHistory failed', { message: error.message });
     throw error;
   }
-  return new Set((data || []).map((r) => `${r.niche}|${r.city}`));
+  return new Set((data || []).map((r) => `${r.niche}|${r.city}|${r.state}`));
 }
 
 /**

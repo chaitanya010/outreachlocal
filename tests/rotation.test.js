@@ -12,11 +12,11 @@ describe('rotation.pickTodayPairs', () => {
   test('excludes pairs already searched within the cooldown window', async () => {
     // Force every possible pair except one to be "recently used" so the
     // picker is forced to converge on that single remaining pair.
-    const survivor = `${NICHES[0].label}|${CITIES[0].city}`;
+    const survivor = `${NICHES[0].label}|${CITIES[0].city}|${CITIES[0].state}`;
     const allKeys = [];
     for (const n of NICHES) {
       for (const c of CITIES) {
-        const key = `${n.label}|${c.city}`;
+        const key = `${n.label}|${c.city}|${c.state}`;
         if (key !== survivor) allKeys.push(key);
       }
     }
@@ -25,13 +25,13 @@ describe('rotation.pickTodayPairs', () => {
     const picked = await pickTodayPairs(1);
 
     expect(picked).toHaveLength(1);
-    expect(`${picked[0].niche}|${picked[0].city}`).toBe(survivor);
+    expect(`${picked[0].niche}|${picked[0].city}|${picked[0].state}`).toBe(survivor);
   });
 
   test('returns fewer than requested if the pool is fully exhausted, without hanging', async () => {
     const allKeys = [];
     for (const n of NICHES) {
-      for (const c of CITIES) allKeys.push(`${n.label}|${c.city}`);
+      for (const c of CITIES) allKeys.push(`${n.label}|${c.city}|${c.state}`);
     }
     getRecentSearchHistory.mockResolvedValue(new Set(allKeys));
 
@@ -44,9 +44,22 @@ describe('rotation.pickTodayPairs', () => {
     getRecentSearchHistory.mockResolvedValue(new Set());
 
     const picked = await pickTodayPairs(10);
-    const keys = picked.map((p) => `${p.niche}|${p.city}`);
+    const keys = picked.map((p) => `${p.niche}|${p.city}|${p.state}`);
 
     expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  test('same city name in different countries is treated as a distinct pair (e.g. London UK vs London Canada)', async () => {
+    getRecentSearchHistory.mockResolvedValue(new Set());
+
+    const londons = CITIES.filter((c) => c.city.startsWith('London'));
+    expect(londons.length).toBeGreaterThanOrEqual(2);
+
+    const picked = await pickTodayPairs(NICHES.length * CITIES.length);
+    const pickedLondonCities = new Set(
+      picked.filter((p) => p.city.startsWith('London')).map((p) => p.city)
+    );
+    expect(pickedLondonCities.size).toBe(londons.length);
   });
 });
 

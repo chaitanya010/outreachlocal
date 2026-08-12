@@ -6,6 +6,7 @@ const { unsubHeaders } = require('../utils/unsubscribe');
 const { buildSignature } = require('../utils/signature');
 const { getColdCallContext } = require('./prospectScorer');
 const { ALL_PROBLEM_DESCRIPTIONS } = require('./leadScorer');
+const { categoryForLead } = require('./nicheCategory');
 
 let client = null;
 
@@ -147,39 +148,100 @@ Rules -- follow all of these exactly:
 - Do not include a signature or sign-off -- that's added separately.
 - Do not include any links in the body text.`;
 
+// Category-level fallback offer/outcome for any business_type not specifically
+// mapped below -- replaces the old single generic fallback shared by every
+// unmapped industry (which meant most B2B/industrial leads got a fallback
+// framed around missed after-hours calls, not very relevant to e.g. a
+// logistics company or accounting firm). See nicheCategory.js.
+const CATEGORY_FALLBACK_OFFER = {
+  appointment_consumer: 'picking up calls that would otherwise go unanswered -- missed or after hours -- with a voice that sounds real enough that callers usually can\'t tell',
+  emergency_home_service: '24/7 emergency call answering and dispatch automation',
+  hospitality_food: 'answering calls during your busiest hours so a reservation or booking inquiry never goes to voicemail',
+  b2b_industrial: 'call answering during busy floor/dispatch hours so a new-business inquiry doesn\'t go to voicemail',
+  b2b_professional: 'automated intake so a new-client inquiry gets booked for a call instead of sitting in voicemail',
+};
+
+const CATEGORY_FALLBACK_OUTCOME = {
+  appointment_consumer: 'appointments',
+  emergency_home_service: 'service calls',
+  hospitality_food: 'bookings',
+  b2b_industrial: 'inquiries',
+  b2b_professional: 'consultations',
+};
+
 // Subset of the spec's "SERVICES TO OFFER" table — keyed by business_type so the
-// AI pitch stays relevant per-industry without an extra AI call.
+// AI pitch stays relevant per-industry without an extra AI call. Expanded to
+// cover every business_type actually seen in real contacted leads (originally
+// only ~20 home-services/healthcare types were mapped, leaving most Apollo-
+// sourced B2B/industrial/professional-services leads on one generic fallback).
 const INDUSTRY_OFFERS = {
   hvac: '24/7 emergency call answering and dispatch automation',
   plumbing: '24/7 emergency call answering and dispatch automation',
   electrician: '24/7 emergency call answering and dispatch automation',
-  restoration: 'after-hours emergency call answering so a burst pipe at 2am still books the job',
-  'water damage': 'after-hours emergency call answering so a burst pipe at 2am still books the job',
-  veterinary: 'emergency appointment routing so after-hours calls don\'t go to voicemail',
-  'urgent care': 'AI receptionist for instant appointment booking',
-  'physical therapy': 'AI receptionist for instant appointment booking',
-  dental: 'AI receptionist with HIPAA-conscious appointment booking',
-  orthodontics: 'AI receptionist with HIPAA-conscious appointment booking',
-  dermatology: 'AI receptionist with HIPAA-conscious appointment booking',
-  'law firm': 'lead qualification and consultation scheduling',
-  attorney: 'lead qualification and consultation scheduling',
-  'funeral home': 'compassionate after-hours answering for families who call at any hour',
-  cpa: 'automated tax appointment scheduling',
-  accounting: 'automated tax appointment scheduling',
-  'property management': 'an AI leasing assistant plus maintenance-request triage',
-  'home health': 'automated patient intake',
-  'equipment rental': 'automated rental scheduling and inventory inquiries',
   'pest control': '24/7 emergency call answering and dispatch automation',
   locksmith: '24/7 emergency call answering and dispatch automation',
   roofing: '24/7 emergency call answering and dispatch automation',
+  restoration: 'after-hours emergency call answering so a burst pipe at 2am still books the job',
+  'water damage': 'after-hours emergency call answering so a burst pipe at 2am still books the job',
+  'garage door': 'after-hours emergency call answering so a locked-out customer at 9pm still books the job instead of calling the next number',
+  'security gate': 'after-hours emergency call answering so a locked-out customer at 9pm still books the job instead of calling the next number',
+  'security door': 'after-hours emergency call answering so a locked-out customer at 9pm still books the job instead of calling the next number',
+  veterinary: 'emergency appointment routing so after-hours calls don\'t go to voicemail',
+  'animal hospital': 'emergency appointment routing so after-hours calls don\'t go to voicemail',
+  'urgent care': 'AI receptionist for instant appointment booking',
+  'physical therapy': 'AI receptionist for instant appointment booking',
+  chiropractic: 'AI receptionist for instant appointment booking',
+  'occupational therapy': 'AI receptionist for instant appointment booking',
+  dental: 'AI receptionist with HIPAA-conscious appointment booking',
+  orthodontics: 'AI receptionist with HIPAA-conscious appointment booking',
+  dermatology: 'AI receptionist with HIPAA-conscious appointment booking',
+  'medical practice': 'AI receptionist with HIPAA-conscious appointment booking',
+  'diagnostic center': 'AI receptionist with HIPAA-conscious appointment booking',
+  'law firm': 'lead qualification and consultation scheduling',
+  'law practice': 'lead qualification and consultation scheduling',
+  attorney: 'lead qualification and consultation scheduling',
+  immigration: 'lead qualification and consultation scheduling for people calling with time-sensitive questions',
+  'funeral home': 'compassionate after-hours answering for families who call at any hour',
+  cpa: 'automated tax appointment scheduling',
+  accounting: 'automated tax appointment scheduling',
+  'financial services': 'automated intake so a new client\'s first call gets booked instead of going to voicemail',
+  mortgage: 'automated intake so a new client\'s first call gets booked instead of going to voicemail',
+  insurance: 'automated intake so a new client\'s first call gets booked instead of going to voicemail',
+  'property management': 'an AI leasing assistant plus maintenance-request triage',
+  'home care': 'automated patient/family intake so a first call from a worried family member gets a human response, not voicemail',
+  'home health': 'automated patient intake',
+  'equipment rental': 'automated rental scheduling and inventory inquiries',
+  'pet boarding': 'automated booking so a boarding request gets confirmed instead of sitting unanswered',
+  salon: 'AI receptionist that books the appointment the moment someone calls, instead of them hanging up and trying the next place',
+  spa: 'AI receptionist that books the appointment the moment someone calls, instead of them hanging up and trying the next place',
+  massage: 'AI receptionist that books the appointment the moment someone calls, instead of them hanging up and trying the next place',
+  nail: 'AI receptionist that books the appointment the moment someone calls, instead of them hanging up and trying the next place',
+  lash: 'AI receptionist that books the appointment the moment someone calls, instead of them hanging up and trying the next place',
+  tattoo: 'AI receptionist that books the appointment the moment someone calls, instead of them hanging up and trying the next place',
+  waxing: 'AI receptionist that books the appointment the moment someone calls, instead of them hanging up and trying the next place',
+  tanning: 'AI receptionist that books the appointment the moment someone calls, instead of them hanging up and trying the next place',
+  barbershop: 'AI receptionist that books the appointment the moment someone calls, instead of them hanging up and trying the next place',
+  gym: 'automated call answering so a new-member inquiry gets booked for a tour instead of falling through',
+  fitness: 'automated call answering so a new-member inquiry gets booked for a tour instead of falling through',
+  yoga: 'automated call answering so a new-member inquiry gets booked for a tour instead of falling through',
+  pilates: 'automated call answering so a new-member inquiry gets booked for a tour instead of falling through',
+  daycare: 'automated enrollment intake so a parent\'s call gets booked for a tour instead of going to voicemail',
+  tutoring: 'automated enrollment intake so a parent\'s call gets booked instead of going to voicemail',
+  'driving school': 'automated enrollment intake so a call gets booked instead of going to voicemail',
+  'real estate': 'instant call answering so a listing inquiry gets a showing booked before they call the next agent',
+  construction: 'after-hours call answering so a new-job inquiry doesn\'t sit until Monday',
+  remodeler: 'after-hours call answering so a new-job inquiry doesn\'t sit until Monday',
+  design: 'automated intake so a new-project inquiry gets booked for a call instead of sitting in voicemail',
+  'information technology': 'automated intake so a new-client inquiry gets booked for a call instead of sitting in voicemail',
+  marketing: 'automated intake so a new-client inquiry gets booked for a call instead of sitting in voicemail',
+  advertising: 'automated intake so a new-client inquiry gets booked for a call instead of sitting in voicemail',
+  consulting: 'automated intake so a new-client inquiry gets booked for a call instead of sitting in voicemail',
 };
 
 function offerForLead(lead) {
   const type = (lead.business_type || '').toLowerCase();
   const match = Object.keys(INDUSTRY_OFFERS).find((k) => type.includes(k));
-  return match
-    ? INDUSTRY_OFFERS[match]
-    : 'picking up calls that would otherwise go unanswered -- missed or after hours -- with a voice that sounds real enough that callers usually can\'t tell';
+  return match ? INDUSTRY_OFFERS[match] : CATEGORY_FALLBACK_OFFER[categoryForLead(lead)];
 }
 
 // `offer` (from offerForLead/INDUSTRY_OFFERS) is deliberately used only as an
@@ -194,23 +256,33 @@ function offerForLead(lead) {
 const NICHE_OUTCOMES = {
   dental: 'patients', orthodontics: 'patients', dermatology: 'patients', 'urgent care': 'patients',
   'physical therapy': 'patients', chiropractic: 'patients', optometrist: 'patients', 'medical imaging': 'patients',
-  veterinary: 'appointments', 'animal hospital': 'appointments',
+  'medical practice': 'patients', 'diagnostic center': 'patients', 'occupational therapy': 'patients',
+  veterinary: 'appointments', 'animal hospital': 'appointments', 'home care': 'families helped',
   spa: 'bookings', 'med spa': 'bookings', salon: 'bookings', 'nail salon': 'bookings', 'hair salon': 'bookings',
   barbershop: 'bookings', massage: 'bookings', waxing: 'bookings', tanning: 'bookings', 'lash studio': 'bookings',
+  tattoo: 'bookings', 'pet boarding': 'bookings',
   gym: 'members', fitness: 'members', 'martial arts': 'members', yoga: 'members', pilates: 'members',
   hvac: 'service calls', plumbing: 'service calls', electrician: 'service calls', 'pest control': 'service calls',
-  locksmith: 'service calls', 'appliance repair': 'service calls',
-  roofing: 'jobs', landscaping: 'jobs', 'tree service': 'jobs', flooring: 'jobs', remodeler: 'jobs',
+  locksmith: 'service calls', 'appliance repair': 'service calls', 'garage door': 'service calls',
+  'security gate': 'service calls', 'security door': 'service calls',
+  roofing: 'jobs', landscaping: 'jobs', 'tree service': 'jobs', flooring: 'jobs', remodeler: 'jobs', construction: 'jobs',
   cleaning: 'bookings', 'carpet cleaning': 'bookings', 'window cleaning': 'bookings',
-  'law firm': 'consultations', attorney: 'consultations', 'real estate': 'appointments', mortgage: 'consultations',
-  insurance: 'consultations', cpa: 'appointments', accounting: 'appointments',
-  'daycare': 'enrollments', tutoring: 'enrollments', 'driving school': 'enrollments',
+  'law firm': 'consultations', 'law practice': 'consultations', attorney: 'consultations', immigration: 'consultations',
+  'real estate': 'showings booked', mortgage: 'consultations',
+  insurance: 'consultations', cpa: 'appointments', accounting: 'appointments', 'financial services': 'consultations',
+  daycare: 'enrollments', tutoring: 'enrollments', 'driving school': 'enrollments',
+  design: 'project inquiries', 'information technology': 'new-client inquiries', marketing: 'new-client inquiries',
+  advertising: 'new-client inquiries', consulting: 'new-client inquiries', 'property management': 'leasing inquiries',
+  'funeral home': 'families helped', 'equipment rental': 'rentals booked',
+  warehousing: 'inquiries', machinery: 'inquiries', wholesale: 'inquiries', manufacturing: 'inquiries',
+  staffing: 'inquiries', recruiting: 'inquiries', logistics: 'inquiries', automotive: 'inquiries',
+  hospitality: 'bookings', 'food & beverage': 'bookings', 'event planner': 'bookings',
 };
 
 function outcomeForLead(lead) {
   const type = (lead.business_type || '').toLowerCase();
   const match = Object.keys(NICHE_OUTCOMES).find((k) => type.includes(k));
-  return match ? NICHE_OUTCOMES[match] : 'appointments';
+  return match ? NICHE_OUTCOMES[match] : CATEGORY_FALLBACK_OUTCOME[categoryForLead(lead)];
 }
 
 // stage: 1=intro (day 0), 2=value (day 3), 3=free redesign offer (day 7), 4=last touch (day 14)
@@ -279,18 +351,38 @@ function pickPainPoint(lead, stage) {
 }
 
 /**
+ * Last-resort observation built purely from whatever fields exist on the
+ * lead row (business_type, city, rating/review_count) -- used only when
+ * there's no personalization_sentence and no scored problems array, which
+ * was true for ~54% of contacted leads (mainly Apollo imports and older
+ * leads predating the discovery pipeline's scoring). Never invents anything
+ * beyond what's actually on the row; a bare "no specific detail available"
+ * was leaving the AI prompt with nothing to personalize against at all.
+ */
+function buildFallbackObservation(lead) {
+  const bits = [];
+  if (lead.business_type) bits.push(`a ${lead.business_type}`);
+  if (lead.city) bits.push(`based in ${String(lead.city).split(',')[0].trim()}`);
+  if (lead.rating && lead.review_count >= 5) bits.push(`rated ${lead.rating} stars across ${lead.review_count} reviews`);
+  if (!bits.length) return '';
+  return `${lead.name} is ${bits.join(', ')}.`;
+}
+
+/**
  * The one genuine, fact-grounded observation to personalize with — pulled
  * from measured signals only (prospectScorer/leadScorer problems, or the
  * discovery pipeline's precomputed personalization_sentence), never invented.
  * Stage 1 prefers the discovery pipeline's pre-built sentence (already the
  * single best fact); every stage falls back to one specific rotated pain
  * point instead of the same generic summary, per Pain Point Selling /
- * One Pain Per Email.
+ * One Pain Per Email. Final fallback (buildFallbackObservation) only kicks in
+ * when neither of those exist, so the prompt still has *something* concrete
+ * instead of "no specific detail available."
  */
 function factualObservation(lead, stage, painKey) {
   if (stage === 1 && lead.personalization_sentence) return lead.personalization_sentence;
   if (painKey && ALL_PROBLEM_DESCRIPTIONS[painKey]) return ALL_PROBLEM_DESCRIPTIONS[painKey];
-  return lead.personalization_sentence || getColdCallContext(lead);
+  return lead.personalization_sentence || getColdCallContext(lead) || buildFallbackObservation(lead);
 }
 
 function greetingName(lead) {
@@ -312,13 +404,39 @@ const STAGE1_SUBJECT_VARIANTS = ['how are calls handled?', 'quick question about
 // at all. Two near-identical variants for the stage-1 (day 0) and stage-2
 // (day 2, if no reply) sends, per direct instruction. No AI call needed --
 // keeping it this minimal is the whole point.
-const DECOY_OPENERS = [
-  (lead) => `Hi, what time does ${lead.name} close today?`,
-  (lead) => `Hey — are you open right now, or what time do you close today?`,
-];
+// Category-specific variants -- "what time do you close today?" reads as a
+// genuine customer question to a salon or clinic, but makes no sense to a
+// logistics company or insurance agency (no walk-in "closing hours"), which
+// makes the whole decoy implausible for those business types instead of
+// just less relevant. Each category's pair is still a plausible first-touch
+// question from a prospective customer of THAT type of business, never
+// revealing the actual pitch. See nicheCategory.js.
+const DECOY_OPENERS_BY_CATEGORY = {
+  appointment_consumer: [
+    (lead) => `Hi, what time does ${lead.name} close today?`,
+    (lead) => `Hey — are you open right now, or what time do you close today?`,
+  ],
+  emergency_home_service: [
+    () => `Hi, is there anyone available today for a service call, or is it booked up?`,
+    () => `Hey, do you have anyone free today or is it more of a next-day thing right now?`,
+  ],
+  hospitality_food: [
+    () => `Hi, are you open right now?`,
+    () => `Hey, do you take walk-ins tonight or is it reservation-only?`,
+  ],
+  b2b_industrial: [
+    () => `Hi, who would I talk to about getting a quote for a small job?`,
+    () => `Hey, are you currently taking on new work or fully booked right now?`,
+  ],
+  b2b_professional: [
+    () => `Hi, are you currently taking on new clients?`,
+    () => `Hey, is someone available for a quick call this week, or are you pretty booked?`,
+  ],
+};
 
 function generateDecoyOpener(lead, senderFirstName, stage = 1) {
-  const body = DECOY_OPENERS[(stage - 1) % DECOY_OPENERS.length](lead);
+  const openers = DECOY_OPENERS_BY_CATEGORY[categoryForLead(lead)] || DECOY_OPENERS_BY_CATEGORY.appointment_consumer;
+  const body = openers[(stage - 1) % openers.length](lead);
   const headers = lead.email ? unsubHeaders(lead.email) : undefined;
   return { subject: 'quick question', text: assembleEmailText(body, senderFirstName), headers, subjectVariant: -1, painPoint: null };
 }
@@ -669,4 +787,7 @@ module.exports = {
   personalizePivotOpener,
   classifyPostPivotReply,
   generateBookingEmail,
+  offerForLead,
+  outcomeForLead,
+  buildFallbackObservation,
 };

@@ -38,7 +38,7 @@ async function pickTodayPairs(count) {
     for (const location of CITIES) {
       const key = `${niche.label}|${location.city}|${location.state}`;
       if (recentlyUsed.has(key)) continue;
-      eligible.push({ niche: niche.label, city: location.city, state: location.state });
+      eligible.push({ niche: niche.label, city: location.city, state: location.state, country: location.country });
     }
   }
 

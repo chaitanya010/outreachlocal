@@ -59,6 +59,7 @@ const {
 const { generateEmail, generateDecoyOpener } = require('./aiMessageService');
 const { sendEmail } = require('./emailService');
 const { notifyOnRecurringFailure, resetFailureStreak } = require('../utils/notify');
+const { isWithinBusinessHours } = require('../utils/timezone');
 const logger = require('../utils/logger');
 
 // Hard outer ceiling on total sequence volume/day (new + follow-ups), across
@@ -298,11 +299,24 @@ async function runOnce({ dailyCap, minGapMinutes = MIN_GAP_MINUTES, workerId = p
     // Look at a small window of due candidates (follow-ups first) so a
     // maxed-out new-lead cap doesn't block a genuinely due follow-up, and vice
     // versa: if the only due candidates are new leads and every sender's
-    // capped, no-op.
-    const candidates = await getEmailSequenceCandidates(10);
+    // capped, no-op. Widened from 10 to 25 now that leads span several
+    // countries/timezones (see isWithinBusinessHours below) -- a bigger
+    // window lowers the odds that every due candidate happens to be
+    // out-of-hours in its own country right now.
+    const candidates = await getEmailSequenceCandidates(25);
     if (!candidates.length) return { sent: false, reason: 'no_candidates' };
 
+    let skippedForLocalHours = 0;
     for (const { lead, nextStage, isNew } of candidates) {
+      // Don't email a lead outside its own local business hours -- fixed
+      // purely to New York time, an Australian lead would get sent to at
+      // 11pm-7am their time. Leave it for a later tick once it's actually a
+      // reasonable hour there.
+      if (!isWithinBusinessHours(lead.country, BUSINESS_HOUR_START, BUSINESS_HOUR_END)) {
+        skippedForLocalHours++;
+        continue;
+      }
+
       // Cross-process/cross-machine guard: two workers (Railway + the
       // GitHub-Actions fallback, or two overlapping Railway triggers) can
       // both reach this point for the same lead. Only one atomic UPDATE can
@@ -354,6 +368,9 @@ async function runOnce({ dailyCap, minGapMinutes = MIN_GAP_MINUTES, workerId = p
       }
     }
 
+    if (skippedForLocalHours === candidates.length) {
+      return { sent: false, reason: 'no_leads_in_local_business_hours', skipped: skippedForLocalHours };
+    }
     return { sent: false, reason: 'new_lead_cap_reached', perSenderCap: PER_SENDER_NEW_LEADS_PER_DAY, senderPoolSize: SENDER_POOL.length };
   } finally {
     runInProgress = false;

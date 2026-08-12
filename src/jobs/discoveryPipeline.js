@@ -60,7 +60,10 @@ async function runDailyDiscovery() {
   const rawCandidates = [];
   for (const pair of pairs) {
     const found = await discoverCandidates(pair.niche, pair.city);
-    rawCandidates.push(...found);
+    // Tag every candidate from this pair with its country -- carried through
+    // dedupe/scoring/enrichment via object spread, and stored on the lead so
+    // emailSequence.js can gate sends to the lead's own local business hours.
+    rawCandidates.push(...found.map((c) => ({ ...c, country: pair.country })));
     await sleep(300);
   }
   logger.info('discoveryPipeline: raw candidates found', { pairs: pairs.length, rawCandidates: rawCandidates.length });

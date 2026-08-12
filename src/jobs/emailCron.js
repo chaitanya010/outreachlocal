@@ -5,12 +5,19 @@
  * process (no external cron/service needed) so "10 new businesses/day" and
  * follow-ups happen automatically every day the server is up.
  *
- * Ticks every EMAIL_TICK_MINUTES (default 30) during US business hours,
- * Mon-Fri, in CRON_TIMEZONE. Each tick calls emailSequence.runOnce(), which
+ * Ticks every EMAIL_TICK_MINUTES (default 30), around the clock, every day.
+ * Used to be restricted to US business hours (9-17 CRON_TIMEZONE, Mon-Fri) —
+ * but that window only ever overlaps a US lead's actual business hours; a
+ * lead in Sydney was never reachable at all, since NY's 9am-5pm falls in the
+ * middle of the Australian night. Now that leads span multiple countries
+ * (see locationLibrary.js), the hour/weekday gate lives per-lead instead
+ * (emailSequence.js's isWithinBusinessHours, via src/utils/timezone.js) —
+ * this scheduler just needs to tick often enough that SOME tick lands inside
+ * each country's own window. Each tick calls emailSequence.runOnce(), which
  * sends at most one email and self-throttles via the daily cap + min-gap
- * jitter already built into the engine — so ~8 business hours / 30min ticks
- * naturally spreads the day's ~10 new intros (plus any due follow-ups)
- * across the day instead of firing them all at once.
+ * jitter already built into the engine, so the extra off-hour ticks
+ * (relative to the old US-only window) just no-op cheaply rather than
+ * over-sending.
  */
 
 const cron = require('node-cron');
@@ -80,7 +87,10 @@ async function enrichTick() {
 function start() {
   if (sendTask) return sendTask; // already running
 
-  const sendExpr = `*/${TICK_MINUTES} ${BUSINESS_HOUR_START}-${BUSINESS_HOUR_END} * * 1-5`;
+  // No hour/weekday restriction here anymore -- runOnce() -> isWithinBusinessHours
+  // gates each candidate by ITS OWN country's local business hours, so this
+  // just needs to tick regularly around the clock to catch all of them.
+  const sendExpr = `*/${TICK_MINUTES} * * * *`;
   sendTask = cron.schedule(sendExpr, tick, { timezone: TIMEZONE });
   logger.info('Email send cron started', { expr: sendExpr, timezone: TIMEZONE });
 

@@ -87,6 +87,11 @@ function loadIsolatedWorker(fakeRepo, sendEmailMock) {
       generateDecoyOpener: jest.fn(() => ({ subject: 's', text: 't' })),
     }));
     jest.doMock('../src/services/emailService', () => ({ sendEmail: sendEmailMock }));
+    // This suite tests the cross-process claim race, not business-hours
+    // gating -- without this, whether these tests pass would depend on the
+    // real wall-clock time (and day of week) the suite happens to run at,
+    // since emailSequence.js now checks each lead's local business hours.
+    jest.doMock('../src/utils/timezone', () => ({ isWithinBusinessHours: () => true }));
     worker = require('../src/services/emailSequence');
   });
   return worker;
